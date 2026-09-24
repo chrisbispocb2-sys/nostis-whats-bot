@@ -1,8 +1,15 @@
-import { keywordStore, type KeywordRuleInput } from "../core/keyword-store";
+import type { Account } from "../core/account";
+import type { KeywordRuleInput } from "../core/keyword-store";
 
-export async function handleRuleRoutes(req: Request, url: URL): Promise<Response | null> {
+export async function handleRuleRoutes(
+  req: Request,
+  url: URL,
+  account: Account
+): Promise<Response | null> {
+  const { keywords } = account;
+
   if (url.pathname === "/rules" && req.method === "GET") {
-    return Response.json({ rules: keywordStore.list() });
+    return Response.json({ rules: keywords.list() });
   }
 
   if (url.pathname === "/rules" && req.method === "POST") {
@@ -16,7 +23,7 @@ export async function handleRuleRoutes(req: Request, url: URL): Promise<Response
       return new Response("Bad request", { status: 400 });
     }
     try {
-      const rule = keywordStore.create({
+      const rule = keywords.create({
         keywords: body.keywords,
         responses: body.responses,
         cooldownMinutes: body.cooldownMinutes,
@@ -25,6 +32,11 @@ export async function handleRuleRoutes(req: Request, url: URL): Promise<Response
         trackMetrics: body.trackMetrics,
         useUrlButton: body.useUrlButton,
         buttonText: body.buttonText,
+        buttonMessage: body.buttonMessage,
+        greetingEnabled: body.greetingEnabled,
+        greetingMessages: body.greetingMessages,
+        greetingPartialMessages: body.greetingPartialMessages,
+        greetingCompleteMessages: body.greetingCompleteMessages,
         enabled: body.enabled,
       });
       return Response.json({ rule });
@@ -41,7 +53,7 @@ export async function handleRuleRoutes(req: Request, url: URL): Promise<Response
     if (req.method === "PUT") {
       const body = (await req.json()) as Partial<KeywordRuleInput>;
       try {
-        const rule = keywordStore.update(id, body);
+        const rule = keywords.update(id, body);
         if (!rule) return new Response("Not found", { status: 404 });
         return Response.json({ rule });
       } catch (err) {
@@ -51,7 +63,7 @@ export async function handleRuleRoutes(req: Request, url: URL): Promise<Response
     }
 
     if (req.method === "DELETE") {
-      const ok = keywordStore.delete(id);
+      const ok = keywords.delete(id);
       if (!ok) return new Response("Not found", { status: 404 });
       return Response.json({ ok: true });
     }

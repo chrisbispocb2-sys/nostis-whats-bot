@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
-import { profileStore } from "./profile-store";
+import type { ProfileStore } from "./profile-store";
 
 export interface GroupInfo {
   jid: string;
@@ -12,16 +12,11 @@ interface GlobalPersistedState {
   active: boolean;
 }
 
-import { PATHS } from "../config/paths";
-
 interface ProfileGroupsState {
   enabledGroups: string[];
 }
 
-// "active" (bot ligado/desligado) é global, vale independente do perfil ativo.
-const STATE_FILE = PATHS.state;
-
-class BotState {
+export class BotState {
   private _active = true;
   private _groups: GroupInfo[] = [];
   // enabledGroups é por perfil: cada preset lembra quais grupos habilitou.
@@ -31,15 +26,22 @@ class BotState {
   // valor são backlog (histórico/offline) e não devem gerar resposta.
   private _activatedAt = Math.floor(Date.now() / 1000);
 
-  constructor() {
+  /**
+   * @param stateFile "active" (bot ligado/desligado) vale para a conta toda,
+   * independente do perfil ativo.
+   */
+  constructor(
+    private readonly stateFile: string,
+    private readonly profiles: ProfileStore
+  ) {
     this.loadGlobal();
     this.loadGroupsForActiveProfile();
   }
 
   private loadGlobal(): void {
-    if (!existsSync(STATE_FILE)) return;
+    if (!existsSync(this.stateFile)) return;
     try {
-      const raw = readFileSync(STATE_FILE, "utf-8");
+      const raw = readFileSync(this.stateFile, "utf-8");
       const data = JSON.parse(raw) as GlobalPersistedState;
       this._active = data.active ?? true;
     } catch (err) {
@@ -49,16 +51,16 @@ class BotState {
 
   private saveGlobal(): void {
     try {
-      mkdirSync(dirname(STATE_FILE), { recursive: true });
+      mkdirSync(dirname(this.stateFile), { recursive: true });
       const data: GlobalPersistedState = { active: this._active };
-      writeFileSync(STATE_FILE, JSON.stringify(data, null, 2), "utf-8");
+      writeFileSync(this.stateFile, JSON.stringify(data, null, 2), "utf-8");
     } catch (err) {
       console.error("Falha ao salvar state.json:", err);
     }
   }
 
   private groupsFile(): string {
-    return join(profileStore.activeDir(), "groups.json");
+    return join(this.profiles.activeDir(), "groups.json");
   }
 
   private loadGroupsForActiveProfile(): void {
@@ -152,5 +154,3 @@ class BotState {
     return [...this._enabledGroups];
   }
 }
-
-export const botState = new BotState();

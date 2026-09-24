@@ -20,3 +20,12 @@ export class NotificationService {
     }
   }
 }
+
+// Uma única instância pro programa todo (vários notificadores brigariam pelo
+// mesmo daemon), criada só na primeira notificação.
+let shared: NotificationService | null = null;
+
+export function sendNotification(title: string, body: string): Promise<void> {
+  shared ??= new NotificationService();
+  return shared.send(title, body);
+}

@@ -9,7 +9,7 @@ import {
 import { join } from "path";
 import { randomUUID } from "crypto";
 
-import { PATHS } from "../config/paths";
+import type { AccountPaths } from "../config/paths";
 
 export interface Profile {
   id: string;
@@ -23,27 +23,23 @@ interface ProfilesIndex {
   profiles: Profile[];
 }
 
-const DATA_DIR = PATHS.appData;
-const PROFILES_DIR = PATHS.profiles;
-const INDEX_FILE = PATHS.profilesIndex;
-
 // Arquivos/pastas que compõem os dados de um perfil (regras, campanhas e
 // mídia de campanhas, e grupos habilitados).
 const PROFILE_DATA_FILES = ["keyword-rules.json", "campaigns.json", "groups.json"] as const;
 const PROFILE_MEDIA_DIR = "campaign-media";
 
-class ProfileStore {
+export class ProfileStore {
   private profiles: Profile[] = [];
   private _activeProfileId = "";
 
-  constructor() {
+  constructor(private readonly paths: Pick<AccountPaths, "root" | "profiles" | "profilesIndex">) {
     this.load();
   }
 
   private load(): void {
-    if (existsSync(INDEX_FILE)) {
+    if (existsSync(this.paths.profilesIndex)) {
       try {
-        const data = JSON.parse(readFileSync(INDEX_FILE, "utf-8")) as ProfilesIndex;
+        const data = JSON.parse(readFileSync(this.paths.profilesIndex, "utf-8")) as ProfilesIndex;
         if (Array.isArray(data.profiles) && data.profiles.length > 0) {
           this.profiles = data.profiles;
           this._activeProfileId =
@@ -60,12 +56,12 @@ class ProfileStore {
   }
 
   private save(): void {
-    mkdirSync(DATA_DIR, { recursive: true });
+    mkdirSync(this.paths.root, { recursive: true });
     const data: ProfilesIndex = {
       activeProfileId: this._activeProfileId,
       profiles: this.profiles,
     };
-    writeFileSync(INDEX_FILE, JSON.stringify(data, null, 2), "utf-8");
+    writeFileSync(this.paths.profilesIndex, JSON.stringify(data, null, 2), "utf-8");
   }
 
   /** Cria o perfil padrão inicial em branco. */
@@ -81,7 +77,7 @@ class ProfileStore {
   }
 
   dirFor(id: string): string {
-    return join(PROFILES_DIR, id);
+    return join(this.paths.profiles, id);
   }
 
   activeDir(): string {
@@ -199,5 +195,3 @@ class ProfileStore {
     return true;
   }
 }
-
-export const profileStore = new ProfileStore();

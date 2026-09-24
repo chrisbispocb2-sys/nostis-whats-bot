@@ -1,17 +1,30 @@
 // src/index.ts
-import { ensureDirectories } from "./config/paths";
+import { APPDATA_DIR, TEMP_DIR, ensureDirectories } from "./config/paths";
+import { CONFIG } from "./config";
 import { acquireLock } from "./core/single-instance";
-import { connectToWhatsApp } from "./core/connection";
+import { AccountManager } from "./core/account-manager";
+import { Overlay } from "./core/overlay";
 import { logger } from "./utils/logger";
 import { startDashboard } from "./core/dashboard";
-import { checkExpiration } from "./core/expiration";
 
 async function main() {
-  checkExpiration();
   ensureDirectories();
   acquireLock();
-  startDashboard();
-  await connectToWhatsApp();
+
+  // O botão da MisticPay solto na tela (Windows) acompanha as contas e a configuração delas
+  let overlay: Overlay | undefined;
+  const manager = new AccountManager({ onMisticChange: () => overlay?.sync() });
+  overlay = new Overlay({
+    accounts: () => manager.list(),
+    port: CONFIG.defaultPort,
+    dataDir: APPDATA_DIR,
+    tempDir: TEMP_DIR,
+  });
+  process.on("exit", () => overlay?.stop());
+
+  startDashboard(manager, CONFIG.defaultPort, overlay);
+  overlay.sync();
+  await manager.startAll();
 }
 
 main().catch((error) => {

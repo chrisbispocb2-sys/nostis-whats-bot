@@ -1,9 +1,12 @@
-import { refreshStatus, initBotControls } from "./modules/bot.js";
+import { refreshStatus, initBotControls, resetBotStatus } from "./modules/bot.js";
+import { initAccounts, loadAccounts, refreshAccounts } from "./modules/accounts.js";
+import { initPay, openPayModal, refreshPay, resetPay } from "./modules/pay.js";
+import { state } from "./modules/state.js";
 import { refreshGroups, initGroups } from "./modules/groups.js";
 import { refreshRules, initRules } from "./modules/rules.js";
 import { refreshCampaigns, initCampaigns } from "./modules/campaigns.js";
 import { initStickers } from "./modules/stickers.js";
-import { refreshLeads, initMetrics } from "./modules/metrics.js";
+import { refreshLeads, initMetrics, resetMetrics } from "./modules/metrics.js";
 import { refreshProfiles, initProfiles } from "./modules/profiles.js";
 import { initSettings } from "./modules/settings.js";
 import { initSidebarResizer } from "./modules/sidebar.js";
@@ -71,43 +74,93 @@ if (document.fonts?.ready) document.fonts.ready.then(moveTabIndicator);
 // Os contadores das abas mudam de largura depois do carregamento inicial
 new ResizeObserver(moveTabIndicator).observe(tabsEl);
 
-/* ---------- Módulos ---------- */
+/* ---------- Conta de WhatsApp ativa ---------- */
 
-initBotControls();
-initGroups();
-initRules();
-initCampaigns();
-initStickers();
-initMetrics();
-initProfiles();
-initSettings();
-initSidebarResizer();
-
-/* ---------- Carga inicial ---------- */
-
-refreshStatus();
-refreshGroups();
-refreshRules();
-refreshCampaigns();
-refreshLeads();
-refreshProfiles();
-
-/* ---------- Polling em segundo plano (pausa com a aba escondida) ---------- */
-
-function every(ms, fn) {
-  setInterval(() => {
-    if (!document.hidden) fn();
-  }, ms);
+/** Recarrega tudo da conta ativa: ao abrir o painel e sempre que o usuário troca de conta. */
+function refreshAll() {
+  resetBotStatus();
+  resetPay();
+  resetMetrics();
+  return Promise.all([
+    refreshStatus(),
+    refreshGroups(),
+    refreshRules(),
+    refreshCampaigns(),
+    refreshLeads(),
+    refreshProfiles(),
+    refreshPay(),
+  ]);
 }
 
-every(2000, refreshStatus);
-every(10000, refreshGroups);
-every(15000, refreshLeads);
+/* ---------- Painel completo ou janela de pagamento ---------- */
 
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) {
-    refreshStatus();
-    refreshGroups();
-    refreshLeads();
+// A janela de pagamento (aberta pelo botão solto na tela) é este mesmo painel em "modo pagamento":
+// só o modal da MisticPay, ocupando a janela toda.
+const params = new URLSearchParams(location.search);
+
+function startPayWindow() {
+  document.body.classList.add("pay-only");
+  // O botão solto na tela encontra a janela por este título
+  document.title = "Brinzy MisticPay - Cobrar";
+  state.activeAccountId = params.get("account");
+
+  initPay({ standalone: true });
+  refreshPay().then(openPayModal);
+  setInterval(refreshPay, 3000);
+}
+
+function startPanel() {
+  /* ---------- Módulos ---------- */
+
+  initAccounts(refreshAll);
+  initBotControls();
+  initGroups();
+  initRules();
+  initCampaigns();
+  initStickers();
+  initMetrics();
+  initProfiles();
+  initSettings();
+  initPay();
+  initSidebarResizer();
+
+  /* ---------- Carga inicial ---------- */
+
+  (async function start() {
+    try {
+      await loadAccounts();
+    } catch (err) {
+      // Sem resposta do programa: o aviso de "sem conexão" aparece sozinho e a
+      // leitura periódica das contas retoma daqui quando ele voltar.
+      console.error("loadAccounts falhou:", err);
+    }
+    refreshAll();
+  })();
+
+  /* ---------- Polling em segundo plano (pausa com a aba escondida) ---------- */
+
+  function every(ms, fn) {
+    setInterval(() => {
+      if (!document.hidden) fn();
+    }, ms);
   }
-});
+
+  every(2000, refreshStatus);
+  every(3000, refreshAccounts);
+  every(3000, refreshPay);
+  every(10000, refreshGroups);
+  every(5000, refreshLeads); // as métricas acompanham os pagamentos sozinhas
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      refreshStatus();
+      refreshAccounts();
+      refreshPay();
+      refreshGroups();
+      refreshLeads();
+    }
+  });
+}
+
+if (params.get("pay") === "1") startPayWindow();
+else startPanel();

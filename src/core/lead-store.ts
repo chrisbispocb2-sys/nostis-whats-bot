@@ -1,7 +1,6 @@
 import { JsonFileStore } from "./base-store";
 import { randomUUID } from "crypto";
-import { normalizeJid } from "../utils/jid";
-import { PATHS } from "../config/paths";
+import { extractPhoneKey, normalizeJid, phoneFromJid, phoneKeysMatch, type PhoneKey } from "../utils/jid";
 import { CONFIG } from "../config";
 
 export type LeadStatus = "pending" | "closed" | "not_closed";
@@ -18,6 +17,10 @@ export interface CallLead {
   value: number | null;
   status: LeadStatus;
   updatedAt: number;
+  /** Preenchidos sozinhos quando o pagamento da MisticPay dessa corrida é confirmado (ausentes em registros antigos). */
+  chargeId?: string | null;
+  paidAt?: number | null;
+  paidAmount?: number | null;
 }
 
 export interface RecordTriggerInput {
@@ -35,9 +38,23 @@ export interface LeadUpdateInput {
 
 const STATUSES: readonly LeadStatus[] = ["pending", "closed", "not_closed"];
 
-class CallLeadStore extends JsonFileStore<CallLead[]> {
-  constructor() {
-    super(PATHS.callLeads, []);
+/** Só liga um pagamento a um gatilho que aconteceu até este tempo antes dele. */
+const PAYMENT_MATCH_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+export interface PaymentInput {
+  chargeId: string;
+  /** JIDs da pessoa (telefone e/ou LID): qualquer um que bata com o do gatilho liga o pagamento a ele. */
+  jids: string[];
+  phone: string | null;
+  amountCents: number;
+  paidAt: number;
+  /** Só gatilhos anteriores à criação da cobrança contam (um gatilho novo é outra corrida). */
+  chargeCreatedAt: number;
+}
+
+export class CallLeadStore extends JsonFileStore<CallLead[]> {
+  constructor(file: string) {
+    super(file, []);
   }
 
   list(): CallLead[] {
@@ -63,6 +80,9 @@ class CallLeadStore extends JsonFileStore<CallLead[]> {
       value: null,
       status: "pending",
       updatedAt: now,
+      chargeId: null,
+      paidAt: null,
+      paidAmount: null,
     };
 
     this.data.unshift(lead);
@@ -97,6 +117,54 @@ class CallLeadStore extends JsonFileStore<CallLead[]> {
     return lead;
   }
 
+  /**
+   * Chamado quando um pagamento da MisticPay é confirmado: acha a corrida (gatilho) mais recente dessa
+   * pessoa ainda sem pagamento, marca como "Fechou" e preenche o valor recebido. Se você já tinha fechado
+   * a corrida e digitado um valor, o seu valor fica (só entram os dados do pagamento).
+   * Não faz nada se a pessoa não tem gatilho nas últimas 48 horas (por exemplo, chamou direto no privado).
+   */
+  applyPayment(input: PaymentInput): CallLead | undefined {
+    if (this.data.some((l) => l.chargeId === input.chargeId)) return undefined; // já ligado antes
+
+    const jids = new Set(input.jids.map(normalizeJid));
+    const phoneKeys: PhoneKey[] = [];
+    if (input.phone) phoneKeys.push(extractPhoneKey(input.phone));
+    for (const jid of jids) if (jid.endsWith("@s.whatsapp.net")) phoneKeys.push(extractPhoneKey(phoneFromJid(jid)));
+
+    const samePerson = (l: CallLead): boolean => {
+      const jid = normalizeJid(l.callerJid);
+      if (jids.has(jid)) return true;
+      if (!jid.endsWith("@s.whatsapp.net")) return false; // LID só casa por igualdade (não dá pra comparar telefone)
+      const key = extractPhoneKey(phoneFromJid(jid));
+      return phoneKeys.some((k) => phoneKeysMatch(k, key));
+    };
+
+    // A lista é da mais recente para a mais antiga
+    const candidates = this.data.filter(
+      (l) =>
+        !l.chargeId &&
+        l.triggeredAt <= input.chargeCreatedAt &&
+        input.paidAt - l.triggeredAt <= PAYMENT_MATCH_WINDOW_MS &&
+        samePerson(l)
+    );
+    const lead = candidates.find((l) => l.privateContactAt !== null) ?? candidates[0];
+    if (!lead) return undefined;
+
+    const paidAmount = input.amountCents / 100;
+    const typedByHand = lead.status === "closed" && lead.value !== null && lead.value > 0;
+    if (!typedByHand) lead.value = paidAmount;
+    lead.status = "closed";
+    lead.chargeId = input.chargeId;
+    lead.paidAt = input.paidAt;
+    lead.paidAmount = paidAmount;
+    // Quem pagou por uma cobrança sua é claramente alguém que falou no privado
+    lead.privateContactAt ??= input.chargeCreatedAt;
+    lead.updatedAt = Date.now();
+
+    this.save();
+    return lead;
+  }
+
   update(id: string, input: LeadUpdateInput): CallLead | undefined {
     const lead = this.get(id);
     if (!lead) return undefined;
@@ -124,5 +192,3 @@ class CallLeadStore extends JsonFileStore<CallLead[]> {
     return true;
   }
 }
-
-export const callLeadStore = new CallLeadStore();

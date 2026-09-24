@@ -1,7 +1,7 @@
 import { writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { randomUUID, createHash } from "crypto";
+import { join } from "path";
 import { JsonFileStore } from "./base-store";
-import { PATHS } from "../config/paths";
 import { CONFIG } from "../config";
 
 export interface LibrarySticker {
@@ -13,9 +13,9 @@ export interface LibrarySticker {
   timesSeen: number;
 }
 
-class StickerLibrary extends JsonFileStore<LibrarySticker[]> {
-  constructor() {
-    super(PATHS.stickerLibrary, []);
+export class StickerLibrary extends JsonFileStore<LibrarySticker[]> {
+  constructor(file: string, private readonly mediaDir: string) {
+    super(file, []);
   }
 
   list(): LibrarySticker[] {
@@ -27,7 +27,7 @@ class StickerLibrary extends JsonFileStore<LibrarySticker[]> {
   }
 
   getMediaPath(sticker: LibrarySticker): string {
-    return `${PATHS.stickerMedia}/${sticker.file}`;
+    return join(this.mediaDir, sticker.file);
   }
 
   /** Chamado quando o bot vê uma figurinha passar em algum grupo. Deduplica por hash do conteúdo. */
@@ -40,10 +40,10 @@ class StickerLibrary extends JsonFileStore<LibrarySticker[]> {
       return;
     }
 
-    mkdirSync(PATHS.stickerMedia, { recursive: true });
+    mkdirSync(this.mediaDir, { recursive: true });
     const id = randomUUID();
     const filename = `${id}.webp`;
-    writeFileSync(`${PATHS.stickerMedia}/${filename}`, buffer);
+    writeFileSync(join(this.mediaDir, filename), buffer);
 
     this.data.unshift({
       id,
@@ -81,5 +81,3 @@ class StickerLibrary extends JsonFileStore<LibrarySticker[]> {
     return true;
   }
 }
-
-export const stickerLibrary = new StickerLibrary();

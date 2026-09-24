@@ -5,6 +5,7 @@ const MAX_SIDEBAR_WIDTH = 640;
 const KEY_STEP = 20;
 
 const layout = document.querySelector(".layout");
+const accountRail = document.getElementById("account-rail");
 const panelResizer = document.getElementById("panel-resizer");
 const sidebarOpenBtn = document.getElementById("sidebar-open");
 const sidebarCloseBtn = document.getElementById("sidebar-close");
@@ -52,7 +53,8 @@ export function initSidebarResizer() {
 
   panelResizer.addEventListener("pointermove", (e) => {
     if (!panelResizer.hasPointerCapture(e.pointerId)) return;
-    applySidebarWidth(e.clientX);
+    // A barra de contas fica à esquerda da lista de grupos: a largura da lista começa depois dela
+    applySidebarWidth(e.clientX - accountRail.offsetWidth);
   });
 
   const stopDragging = (e) => {

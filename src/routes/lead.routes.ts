@@ -1,22 +1,29 @@
-import { callLeadStore, type LeadUpdateInput } from "../core/lead-store";
-import { banStore } from "../core/ban-store";
-import { callerStore } from "../core/caller-store";
+import type { Account } from "../core/account";
+import { summarizePayments } from "../core/charge-store";
+import type { LeadUpdateInput } from "../core/lead-store";
 
-export async function handleLeadRoutes(req: Request, url: URL): Promise<Response | null> {
+export async function handleLeadRoutes(
+  req: Request,
+  url: URL,
+  account: Account
+): Promise<Response | null> {
+  const { leads, bans, callers } = account;
+
   if (url.pathname === "/leads" && req.method === "GET") {
-    return Response.json({ leads: callLeadStore.list() });
+    // `payments`: quanto entrou pela MisticPay hoje e no mês (independe de o cliente ter uma corrida nas métricas)
+    return Response.json({ leads: leads.list(), payments: summarizePayments(account.charges.list()) });
   }
 
   if (url.pathname === "/callers" && req.method === "GET") {
-    return Response.json({ callers: callerStore.list() });
+    return Response.json({ callers: callers.list() });
   }
 
   const leadBanMatch = url.pathname.match(/^\/leads\/([^/]+)\/ban$/);
   if (leadBanMatch && req.method === "POST") {
     const id = decodeURIComponent(leadBanMatch[1]!);
-    const lead = callLeadStore.get(id);
+    const lead = leads.get(id);
     if (!lead) return new Response("Not found", { status: 404 });
-    const ban = banStore.ban(lead.callerJid, lead.callerName);
+    const ban = bans.ban(lead.callerJid, lead.callerName);
     return Response.json({ ban });
   }
 
@@ -27,7 +34,7 @@ export async function handleLeadRoutes(req: Request, url: URL): Promise<Response
     if (req.method === "PUT") {
       const body = (await req.json()) as Partial<LeadUpdateInput>;
       try {
-        const lead = callLeadStore.update(id, body);
+        const lead = leads.update(id, body);
         if (!lead) return new Response("Not found", { status: 404 });
         return Response.json({ lead });
       } catch (err) {
@@ -37,7 +44,7 @@ export async function handleLeadRoutes(req: Request, url: URL): Promise<Response
     }
 
     if (req.method === "DELETE") {
-      const ok = callLeadStore.delete(id);
+      const ok = leads.delete(id);
       if (!ok) return new Response("Not found", { status: 404 });
       return Response.json({ ok: true });
     }

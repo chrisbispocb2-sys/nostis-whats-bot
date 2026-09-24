@@ -14,6 +14,11 @@ export function phoneFromJid(jid: string): string {
   return normalizeJid(jid).split("@")[0]!;
 }
 
+/** Conversa com uma pessoa (não é grupo, status, lista de transmissão nem canal). */
+export function isPersonalChat(jid: string): boolean {
+  return jid.endsWith("@s.whatsapp.net") || jid.endsWith("@lid");
+}
+
 export interface PhoneKey {
   /** Os 8 últimos dígitos do número: o "miolo" local, sem DDI/DDD nem o 9 extra. */
   last8: string;

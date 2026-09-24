@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { api } from "./api.js";
+import { api, accountUrl } from "./api.js";
 import { escapeHtml } from "./utils.js";
 import { icon, notify, confirmDialog, bindModal, openModal, closeModal, emptyState } from "./ui.js";
 
@@ -32,7 +32,7 @@ export async function openStickerGallery() {
         (s) => `
         <div class="sticker-thumb-wrap">
           <button type="button" class="sticker-thumb" data-id="${s.id}" title="Visto em: ${escapeHtml(s.sourceGroupName)}">
-            <img src="/stickers/${encodeURIComponent(s.id)}/media" alt="Figurinha vista em ${escapeHtml(s.sourceGroupName)}" loading="lazy">
+            <img src="${accountUrl(`/stickers/${encodeURIComponent(s.id)}/media`)}" alt="Figurinha vista em ${escapeHtml(s.sourceGroupName)}" loading="lazy">
           </button>
           <button type="button" class="sticker-thumb-delete" data-id="${s.id}" title="Remover da galeria" aria-label="Remover da galeria">${icon("x")}</button>
         </div>`
@@ -59,7 +59,7 @@ export function selectGallerySticker(id) {
   state.campaignHasNewMediaFile = false;
   state.campaignMediaRemoved = false;
   campaignMediaFileInput.value = "";
-  campaignMediaImg.src = `/stickers/${encodeURIComponent(id)}/media`;
+  campaignMediaImg.src = accountUrl(`/stickers/${encodeURIComponent(id)}/media`);
   campaignMediaPreview.classList.remove("hidden");
   closeModal(stickerGalleryModal);
   notify.success("A figurinha será usada nesta campanha.", { title: "Figurinha escolhida", duration: 2200 });

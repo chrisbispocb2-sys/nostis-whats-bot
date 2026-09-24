@@ -1,14 +1,18 @@
-import { botState } from "../core/state";
-import { groupDelayStore } from "../core/group-delay-store";
-import { getSock, refreshGroups, isWhatsAppConnected } from "../core/connection";
+import type { Account } from "../core/account";
 import { logger } from "../utils/logger";
 
-export async function handleGroupRoutes(req: Request, url: URL): Promise<Response | null> {
+export async function handleGroupRoutes(
+  req: Request,
+  url: URL,
+  account: Account
+): Promise<Response | null> {
+  const { bot, groupDelays, connection } = account;
+
   if (url.pathname === "/groups" && req.method === "GET") {
     return Response.json({
-      groups: botState.groups,
-      enabled: botState.enabledGroups,
-      delays: groupDelayStore.getAll(),
+      groups: bot.groups,
+      enabled: bot.enabledGroups,
+      delays: groupDelays.getAll(),
     });
   }
 
@@ -17,7 +21,7 @@ export async function handleGroupRoutes(req: Request, url: URL): Promise<Respons
     if (!body.jid || typeof body.enabled !== "boolean") {
       return new Response("Bad request", { status: 400 });
     }
-    botState.setGroupEnabled(body.jid, body.enabled);
+    bot.setGroupEnabled(body.jid, body.enabled);
     return Response.json({ ok: true });
   }
 
@@ -26,12 +30,12 @@ export async function handleGroupRoutes(req: Request, url: URL): Promise<Respons
     if (!body.jid || typeof body.delayMs !== "number" || Number.isNaN(body.delayMs)) {
       return new Response("Bad request", { status: 400 });
     }
-    groupDelayStore.set(body.jid, body.delayMs);
-    return Response.json({ ok: true, delayMs: groupDelayStore.get(body.jid) });
+    groupDelays.set(body.jid, body.delayMs);
+    return Response.json({ ok: true, delayMs: groupDelays.get(body.jid) });
   }
 
   if (url.pathname === "/groups/select-all" && req.method === "POST") {
-    if (botState.groups.length === 0) {
+    if (bot.groups.length === 0) {
       return Response.json(
         {
           error:
@@ -40,23 +44,23 @@ export async function handleGroupRoutes(req: Request, url: URL): Promise<Respons
         { status: 409 }
       );
     }
-    botState.enableAllGroups();
+    bot.enableAllGroups();
     return Response.json({
-      groups: botState.groups,
-      enabled: botState.enabledGroups,
+      groups: bot.groups,
+      enabled: bot.enabledGroups,
     });
   }
 
   if (url.pathname === "/groups/deselect-all" && req.method === "POST") {
-    botState.disableAllGroups();
+    bot.disableAllGroups();
     return Response.json({
-      groups: botState.groups,
-      enabled: botState.enabledGroups,
+      groups: bot.groups,
+      enabled: bot.enabledGroups,
     });
   }
 
   if (url.pathname === "/groups/refresh" && req.method === "POST") {
-    if (!isWhatsAppConnected()) {
+    if (!connection.connected) {
       return Response.json(
         {
           error:
@@ -66,9 +70,8 @@ export async function handleGroupRoutes(req: Request, url: URL): Promise<Respons
       );
     }
     try {
-      const sock = getSock();
-      const groups = await refreshGroups(sock);
-      return Response.json({ groups, enabled: botState.enabledGroups });
+      const groups = await connection.refreshGroups();
+      return Response.json({ groups, enabled: bot.enabledGroups });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error({ err }, "Falha ao atualizar grupos via dashboard");
@@ -82,7 +85,7 @@ export async function handleGroupRoutes(req: Request, url: URL): Promise<Respons
   if (url.pathname.startsWith("/groups/picture/")) {
     const jid = decodeURIComponent(url.pathname.replace("/groups/picture/", ""));
     try {
-      const sock = getSock();
+      const sock = connection.getSock();
       const picUrl = await sock.profilePictureUrl(jid, "image");
 
       if (!picUrl) {

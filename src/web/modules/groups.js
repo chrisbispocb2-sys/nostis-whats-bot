@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { api } from "./api.js";
+import { api, accountUrl } from "./api.js";
 import { escapeHtml, avatarHtml } from "./utils.js";
 import { icon, notify, confirmDialog, emptyState } from "./ui.js";
 
@@ -24,7 +24,7 @@ function matchesFilter(group, filter) {
 }
 
 function groupAvatar(g) {
-  return avatarHtml(g.name, { pictureUrl: g.hasPicture ? `/groups/picture/${encodeURIComponent(g.jid)}` : null });
+  return avatarHtml(g.name, { pictureUrl: g.hasPicture ? accountUrl(`/groups/picture/${encodeURIComponent(g.jid)}`) : null });
 }
 
 export function updateCount() {

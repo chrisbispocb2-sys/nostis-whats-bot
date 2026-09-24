@@ -1,9 +1,8 @@
 import { JsonFileStore } from "./base-store";
-import { PATHS } from "../config/paths";
 
-class GroupDelayStore extends JsonFileStore<Record<string, number>> {
-  constructor() {
-    super(PATHS.groupDelays, {});
+export class GroupDelayStore extends JsonFileStore<Record<string, number>> {
+  constructor(file: string) {
+    super(file, {});
   }
 
   get(jid: string): number {
@@ -24,5 +23,3 @@ class GroupDelayStore extends JsonFileStore<Record<string, number>> {
     this.save();
   }
 }
-
-export const groupDelayStore = new GroupDelayStore();

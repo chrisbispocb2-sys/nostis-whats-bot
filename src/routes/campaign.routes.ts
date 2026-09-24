@@ -1,8 +1,14 @@
-import { campaignStore, type CampaignInput } from "../core/campaign-store";
+import type { Account } from "../core/account";
+import type { CampaignInput } from "../core/campaign-store";
 import { sendCampaign, getSendState, isSending } from "../services/campaign.service";
-import { getSock, isWhatsAppConnected } from "../core/connection";
 
-export async function handleCampaignRoutes(req: Request, url: URL): Promise<Response | null> {
+export async function handleCampaignRoutes(
+  req: Request,
+  url: URL,
+  account: Account
+): Promise<Response | null> {
+  const { campaigns: campaignStore, bot, connection } = account;
+
   if (url.pathname === "/campaigns" && req.method === "GET") {
     return Response.json({ campaigns: campaignStore.list() });
   }
@@ -45,7 +51,7 @@ export async function handleCampaignRoutes(req: Request, url: URL): Promise<Resp
     if (campaign.groupJids.length === 0) {
       return Response.json({ error: "Esta campanha não tem grupos de destino." }, { status: 400 });
     }
-    if (!isWhatsAppConnected()) {
+    if (!connection.connected) {
       return Response.json(
         { error: "O bot não está conectado ao WhatsApp no momento. Conecte-se e tente novamente." },
         { status: 503 }
@@ -55,7 +61,10 @@ export async function handleCampaignRoutes(req: Request, url: URL): Promise<Resp
       return Response.json({ error: "Esta campanha já está sendo enviada." }, { status: 409 });
     }
 
-    void sendCampaign(getSock(), campaign);
+    void sendCampaign(connection.getSock(), campaign, {
+      mediaPath: campaignStore.getMediaPath(campaign),
+      groupName: (jid) => bot.groups.find((g) => g.jid === jid)?.name ?? jid,
+    });
     return Response.json({ started: true });
   }
 

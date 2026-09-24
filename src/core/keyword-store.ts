@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { randomUUID } from "crypto";
-import { profileStore } from "./profile-store";
+import type { ProfileStore } from "./profile-store";
 
 export interface KeywordRule {
   id: string;
@@ -23,6 +23,24 @@ export interface KeywordRule {
   useUrlButton: boolean;
   /** Texto do botão quando useUrlButton está ativo. */
   buttonText: string | null;
+  /**
+   * Mensagem pré-pronta que já aparece digitada na conversa privada quando a
+   * pessoa clica no botão (vai no `?text=` do link wa.me). Ela ainda precisa
+   * apertar enviar. Só vale quando useUrlButton está ativo.
+   */
+  buttonMessage: string | null;
+  /**
+   * Quando quem disparou a regra no grupo escreve no privado, o bot puxa a
+   * conversa e pergunta os endereços (só o que ainda falta, se o cliente já
+   * mandou algum).
+   */
+  greetingEnabled: boolean;
+  /** Saudação enviada quando o cliente ainda não mandou nenhum endereço. Vazio = usa a padrão. */
+  greetingMessages: string[];
+  /** Enviada quando o cliente mandou só um endereço. Vazio = usa a padrão. */
+  greetingPartialMessages: string[];
+  /** Enviada quando o cliente já mandou origem e destino (ou áudio/foto). Vazio = usa a padrão. */
+  greetingCompleteMessages: string[];
   enabled: boolean;
   createdAt: number;
   updatedAt: number;
@@ -37,10 +55,22 @@ export interface KeywordRuleInput {
   trackMetrics?: boolean;
   useUrlButton?: boolean;
   buttonText?: string | null;
+  buttonMessage?: string | null;
+  greetingEnabled?: boolean;
+  greetingMessages?: string[];
+  greetingPartialMessages?: string[];
+  greetingCompleteMessages?: string[];
   enabled?: boolean;
 }
 
 export const DEFAULT_BUTTON_TEXT = "📲 Chama no PV";
+
+export const DEFAULT_GREETING_MESSAGE =
+  "Olá! 👋 Já vou te atender. Me envie o endereço de *origem* (onde te busco) e o de *destino* (para onde vai), por favor. 📍";
+export const DEFAULT_GREETING_PARTIAL_MESSAGE =
+  "Recebi um endereço! 📍 Me envie também o que falta: de onde te busco e para onde você vai.";
+export const DEFAULT_GREETING_COMPLETE_MESSAGE =
+  "Recebi! 🚗 Já vou verificar tudo e te respondo rapidinho.";
 
 /** Conjunto fixo de reações disponíveis na dashboard. */
 export const ALLOWED_REACTIONS = ["❤️", "👍", "🙏", "🚀", "🔥"] as const;
@@ -51,10 +81,6 @@ function normalizeReaction(emoji: string | null | undefined): string | null {
     throw new Error(`Reação inválida: "${emoji}". Use uma das opções disponíveis.`);
   }
   return emoji;
-}
-
-function rulesFile(): string {
-  return join(profileStore.activeDir(), "keyword-rules.json");
 }
 
 // Regra padrão preservada da configuração original, usada apenas quando um
@@ -74,6 +100,11 @@ function createDefaultRules(): KeywordRule[] {
       trackMetrics: false,
       useUrlButton: false,
       buttonText: null,
+      buttonMessage: null,
+      greetingEnabled: false,
+      greetingMessages: [],
+      greetingPartialMessages: [],
+      greetingCompleteMessages: [],
       enabled: true,
       createdAt: now,
       updatedAt: now,
@@ -85,16 +116,20 @@ function normalizeList(items: string[]): string[] {
   return items.map((item) => item.trim()).filter(Boolean);
 }
 
-class KeywordStore {
+export class KeywordStore {
   private rules: KeywordRule[] = [];
   private lastTriggered = new Map<string, number>();
 
-  constructor() {
+  constructor(private readonly profiles: ProfileStore) {
     this.load();
   }
 
+  private rulesFile(): string {
+    return join(this.profiles.activeDir(), "keyword-rules.json");
+  }
+
   private load(): void {
-    const file = rulesFile();
+    const file = this.rulesFile();
     if (!existsSync(file)) {
       this.rules = createDefaultRules();
       this.save();
@@ -113,6 +148,11 @@ class KeywordStore {
         trackMetrics: rule.trackMetrics ?? false,
         useUrlButton: rule.useUrlButton ?? false,
         buttonText: rule.buttonText ?? null,
+        buttonMessage: rule.buttonMessage ?? null,
+        greetingEnabled: rule.greetingEnabled ?? false,
+        greetingMessages: rule.greetingMessages ?? [],
+        greetingPartialMessages: rule.greetingPartialMessages ?? [],
+        greetingCompleteMessages: rule.greetingCompleteMessages ?? [],
       }));
     } catch (err) {
       console.error("Falha ao carregar keyword-rules.json:", err);
@@ -122,7 +162,7 @@ class KeywordStore {
 
   private save(): void {
     try {
-      const file = rulesFile();
+      const file = this.rulesFile();
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, JSON.stringify(this.rules, null, 2), "utf-8");
     } catch (err) {
@@ -156,6 +196,11 @@ class KeywordStore {
       trackMetrics: input.trackMetrics ?? false,
       useUrlButton: input.useUrlButton ?? false,
       buttonText: input.buttonText?.trim() || null,
+      buttonMessage: input.buttonMessage?.trim() || null,
+      greetingEnabled: input.greetingEnabled ?? false,
+      greetingMessages: normalizeList(input.greetingMessages ?? []),
+      greetingPartialMessages: normalizeList(input.greetingPartialMessages ?? []),
+      greetingCompleteMessages: normalizeList(input.greetingCompleteMessages ?? []),
       enabled: input.enabled ?? true,
       createdAt: now,
       updatedAt: now,
@@ -179,6 +224,15 @@ class KeywordStore {
     if (input.trackMetrics !== undefined) rule.trackMetrics = input.trackMetrics;
     if (input.useUrlButton !== undefined) rule.useUrlButton = input.useUrlButton;
     if (input.buttonText !== undefined) rule.buttonText = input.buttonText?.trim() || null;
+    if (input.buttonMessage !== undefined) rule.buttonMessage = input.buttonMessage?.trim() || null;
+    if (input.greetingEnabled !== undefined) rule.greetingEnabled = input.greetingEnabled;
+    if (input.greetingMessages) rule.greetingMessages = normalizeList(input.greetingMessages);
+    if (input.greetingPartialMessages) {
+      rule.greetingPartialMessages = normalizeList(input.greetingPartialMessages);
+    }
+    if (input.greetingCompleteMessages) {
+      rule.greetingCompleteMessages = normalizeList(input.greetingCompleteMessages);
+    }
     if (input.enabled !== undefined) rule.enabled = input.enabled;
     rule.updatedAt = Date.now();
 
@@ -224,5 +278,3 @@ class KeywordStore {
     this.lastTriggered.set(`${ruleId}:${jid}`, Date.now());
   }
 }
-
-export const keywordStore = new KeywordStore();

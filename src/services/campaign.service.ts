@@ -1,9 +1,15 @@
 import { readFileSync } from "fs";
 import type { WASocket } from "baileys-joss";
-import { campaignStore, type Campaign } from "../core/campaign-store";
-import { botState } from "../core/state";
+import type { Campaign } from "../core/campaign-store";
 import { logger } from "../utils/logger";
 import { sleep } from "../utils/sleep";
+
+/** O que o envio precisa da conta que está enviando a campanha. */
+export interface CampaignSendContext {
+  /** Caminho da mídia da campanha no disco, ou null se ela não tem mídia. */
+  mediaPath: string | null;
+  groupName(jid: string): string;
+}
 
 export interface CampaignSendResult {
   jid: string;
@@ -40,7 +46,11 @@ export function isSending(campaignId: string): boolean {
  * reduzir o risco de o número ser marcado como spam pelo WhatsApp.
  * Roda em segundo plano; o progresso é consultado via getSendState().
  */
-export async function sendCampaign(sock: WASocket, campaign: Campaign): Promise<void> {
+export async function sendCampaign(
+  sock: WASocket,
+  campaign: Campaign,
+  context: CampaignSendContext
+): Promise<void> {
   if (isSending(campaign.id)) return;
 
   const state: CampaignSendState = {
@@ -53,12 +63,11 @@ export async function sendCampaign(sock: WASocket, campaign: Campaign): Promise<
   };
   sendStates.set(campaign.id, state);
 
-  const mediaPath = campaignStore.getMediaPath(campaign);
-  const mediaBuffer = mediaPath ? readFileSync(mediaPath) : null;
+  const mediaBuffer = context.mediaPath ? readFileSync(context.mediaPath) : null;
 
   for (let i = 0; i < campaign.groupJids.length; i++) {
     const jid = campaign.groupJids[i]!;
-    const groupName = botState.groups.find((g) => g.jid === jid)?.name ?? jid;
+    const groupName = context.groupName(jid);
 
     try {
       if (campaign.mediaType === "sticker" && mediaBuffer) {

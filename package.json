@@ -4,12 +4,11 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "bun run build:web && bun build ./src/index.ts --compile --minify --outfile dist/BotBrinzy.exe",
     "build:web": "bun build ./src/web/main.js --outfile ./src/web/dist/app.txt --minify",
-    "build:win": "bun run gen-build-info && bun build ./src/index.ts --compile --outfile dist/BotBrinzy.exe",
+    "build": "bun run build:web && bun run scripts/build-exe.ts",
     "start": "bun run build:web && bun run src/index.ts",
-    "gen-build-info": "bun run src/scripts/generate-build-info.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "devDependencies": {
     "@types/bun": "1.4.2",

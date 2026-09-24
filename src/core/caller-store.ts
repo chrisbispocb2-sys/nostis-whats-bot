@@ -1,6 +1,5 @@
 import { JsonFileStore } from "./base-store";
 import { normalizeJid } from "../utils/jid";
-import { PATHS } from "../config/paths";
 import { CONFIG } from "../config";
 
 export interface CallerStats {
@@ -10,9 +9,9 @@ export interface CallerStats {
   lastCallAt: number;
 }
 
-class CallerStore extends JsonFileStore<CallerStats[]> {
-  constructor() {
-    super(PATHS.callers, []);
+export class CallerStore extends JsonFileStore<CallerStats[]> {
+  constructor(file: string) {
+    super(file, []);
   }
 
   list(): CallerStats[] {
@@ -40,5 +39,3 @@ class CallerStore extends JsonFileStore<CallerStats[]> {
     return existing;
   }
 }
-
-export const callerStore = new CallerStore();

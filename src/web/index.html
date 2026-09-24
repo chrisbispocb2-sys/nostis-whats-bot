@@ -53,6 +53,12 @@
     <symbol id="i-wifi-off" viewBox="0 0 24 24"><path d="M12 20h.01"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/><path d="M5 12.859a10 10 0 0 1 5.17-2.69"/><path d="M19 12.859a10 10 0 0 0-2.007-1.523"/><path d="M2 8.82a15 15 0 0 1 4.177-2.643"/><path d="M22 8.82a15 15 0 0 0-11.288-3.764"/><path d="m2 2 20 20"/></symbol>
     <symbol id="i-layers" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></symbol>
     <symbol id="i-trending" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+    <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+    <symbol id="i-dice" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><path d="M8 8h.01"/><path d="M16 8h.01"/><path d="M12 12h.01"/><path d="M8 16h.01"/><path d="M16 16h.01"/></symbol>
+    <symbol id="i-log-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></symbol>
   </svg>
 
   <div id="offline-banner" class="offline-banner hidden" role="alert">
@@ -61,6 +67,14 @@
   </div>
 
   <div class="layout">
+    <!-- ============ Contas de WhatsApp ============ -->
+    <nav id="account-rail" class="account-rail" aria-label="Contas de WhatsApp">
+      <ul id="account-list" class="account-list"></ul>
+      <button id="add-account-btn" class="account-add" type="button" title="Adicionar outro WhatsApp" aria-label="Adicionar outro WhatsApp">
+        <svg class="icon"><use href="#i-plus"/></svg>
+      </button>
+    </nav>
+
     <!-- ============ Barra lateral: conexão + grupos ============ -->
     <aside id="sidebar" class="sidebar" aria-label="Grupos do WhatsApp">
       <div class="brand">
@@ -80,6 +94,9 @@
           <strong id="wa-status-title">Verificando conexão…</strong>
           <small id="wa-status-sub">Aguarde um instante</small>
         </div>
+        <button id="account-manage-btn" class="icon-btn icon-btn-sm ghost" type="button" title="Gerenciar esta conta (nome, QR Code, desconectar)" aria-label="Gerenciar esta conta">
+          <svg class="icon"><use href="#i-more"/></svg>
+        </button>
       </div>
 
       <div class="sidebar-head">
@@ -137,6 +154,11 @@
             <select id="profile-select" class="select" aria-label="Perfil ativo"></select>
             <button id="manage-profiles-btn" class="btn btn-ghost btn-sm" type="button">Gerenciar</button>
           </div>
+
+          <button id="guard-btn" class="guard-btn" type="button" data-state="off" aria-pressed="false" disabled>
+            <svg class="icon"><use href="#i-shield"/></svg>
+            <span id="guard-label">Segurança</span>
+          </button>
 
           <button id="settings-btn" class="icon-btn" type="button" title="Configurações" aria-label="Configurações">
             <svg class="icon"><use href="#i-sliders"/></svg>
@@ -233,6 +255,10 @@
             <span class="stat-icon"><svg class="icon"><use href="#i-dollar"/></svg></span>
             <div class="stat-body"><span class="stat-value" id="stat-revenue">R$ 0,00</span><span class="stat-label">Faturamento (fechadas)</span></div>
           </div>
+          <div id="stat-received-card" class="stat tone-sky hidden" title="Pagamentos confirmados pela MisticPay (com ou sem corrida nas métricas)">
+            <span class="stat-icon"><svg class="icon"><use href="#i-wallet"/></svg></span>
+            <div class="stat-body"><span class="stat-value" id="stat-received">R$ 0,00</span><span class="stat-label" id="stat-received-label">Recebido hoje</span><span class="stat-sub" id="stat-received-sub"></span></div>
+          </div>
         </div>
 
         <div class="table-card scroll">
@@ -323,6 +349,38 @@
           <div class="field" style="margin-top:14px">
             <label for="rule-button-text">Texto do botão</label>
             <input id="rule-button-text" class="input" type="text" placeholder="📲 Chama no PV">
+          </div>
+          <div class="field" style="margin-top:14px">
+            <label for="rule-button-message">Mensagem pré-pronta <em>(opcional)</em></label>
+            <textarea id="rule-button-message" class="input" rows="2" maxlength="500" placeholder="Oi! Vim pelo grupo e quero ser atendido"></textarea>
+            <p class="hint">Já aparece digitada na conversa privada quando a pessoa clica no botão — ela só precisa enviar.</p>
+          </div>
+        </div>
+
+        <label class="option">
+          <span class="option-text">
+            <strong>Saudação automática no privado</strong>
+            <small>Quando quem chamou no grupo escrever no seu privado, o bot puxa a conversa e pergunta os endereços.</small>
+          </span>
+          <span class="switch"><input id="rule-greeting-enabled" type="checkbox"><span class="switch-track"></span></span>
+        </label>
+
+        <div id="rule-greeting-wrap" class="hidden">
+          <p class="hint">O bot espera alguns segundos até o cliente parar de escrever e lê o que ele mandou (texto, localização, áudio ou foto). Se ele já mandou os endereços, o bot não pergunta de novo. Se você responder antes, o bot não envia nada. Deixe um campo vazio para usar a mensagem padrão; com várias linhas, o bot escolhe uma delas.</p>
+
+          <div class="field" style="margin-top:14px">
+            <label for="rule-greeting-messages">Quando o cliente ainda não mandou endereço</label>
+            <textarea id="rule-greeting-messages" class="input" rows="3" placeholder="Olá! 👋 Já vou te atender. Me envie o endereço de *origem* (onde te busco) e o de *destino* (para onde vai), por favor. 📍"></textarea>
+          </div>
+
+          <div class="field" style="margin-top:14px">
+            <label for="rule-greeting-partial">Quando mandou só um endereço</label>
+            <textarea id="rule-greeting-partial" class="input" rows="2" placeholder="Recebi um endereço! 📍 Me envie também o que falta: de onde te busco e para onde você vai."></textarea>
+          </div>
+
+          <div class="field" style="margin-top:14px">
+            <label for="rule-greeting-complete">Quando já mandou origem e destino <em>(ou áudio/foto)</em></label>
+            <textarea id="rule-greeting-complete" class="input" rows="2" placeholder="Recebi! 🚗 Já vou verificar tudo e te respondo rapidinho."></textarea>
           </div>
         </div>
 
@@ -502,12 +560,18 @@
       <header class="modal-head">
         <div>
           <h2 id="settings-modal-title">Configurações</h2>
-          <p>Ajustes gerais do bot, valem para todos os perfis.</p>
+          <p>Ajustes gerais desta conta de WhatsApp, valem para todos os perfis dela.</p>
         </div>
         <button type="button" class="icon-btn modal-close" data-close aria-label="Fechar"><svg class="icon"><use href="#i-x"/></svg></button>
       </header>
 
       <div class="modal-body">
+        <div class="segmented" role="radiogroup" aria-label="Seção das configurações">
+          <label><input type="radio" name="settings-tab" value="general" checked><span>Geral</span></label>
+          <label><input type="radio" name="settings-tab" value="mistic"><span><svg class="icon"><use href="#i-wallet"/></svg> MisticPay</span></label>
+        </div>
+
+        <div id="settings-general" class="settings-section">
         <label class="option">
           <span class="option-text">
             <strong>Ignorar contatos com “ADM” no nome</strong>
@@ -515,6 +579,23 @@
           </span>
           <span class="switch"><input id="settings-ignore-adm" type="checkbox"><span class="switch-track"></span></span>
         </label>
+
+        <label class="option">
+          <span class="option-text">
+            <strong>Segurança: desligar o bot se ninguém responder no privado</strong>
+            <small>Se chegar uma mensagem no privado e ninguém responder dentro do prazo, o bot desliga sozinho, para não continuar chamando clientes sem ter quem atenda.</small>
+          </span>
+          <span class="switch"><input id="settings-auto-shutdown" type="checkbox"><span class="switch-track"></span></span>
+        </label>
+
+        <div id="settings-auto-shutdown-wrap" class="field hidden">
+          <label for="settings-auto-shutdown-minutes">Prazo para responder</label>
+          <div class="input-suffix input-suffix-narrow">
+            <input id="settings-auto-shutdown-minutes" class="input" type="number" min="1" max="720" step="1" value="5">
+            <span>min</span>
+          </div>
+          <p class="hint">A contagem começa na primeira mensagem sem resposta de cada conversa. Responder pelo celular ou pelo computador cancela a contagem daquela conversa.</p>
+        </div>
 
         <div class="field">
           <label for="settings-no-reply-numbers">Números sem resposta</label>
@@ -525,6 +606,137 @@
         <div class="field">
           <span class="label">Números banidos</span>
           <ul id="settings-bans-list" class="stack-list stack-list-compact"></ul>
+        </div>
+        </div>
+
+        <!-- ---- MisticPay ---- -->
+        <div id="settings-mistic" class="settings-section hidden">
+          <label class="option">
+            <span class="option-text">
+              <strong>Ativar a integração com a MisticPay</strong>
+              <small>Mostra o botão flutuante de cobrança durante as conversas no privado e libera cobrar clientes e sacar pelo painel.</small>
+            </span>
+            <span class="switch"><input id="mistic-enabled" type="checkbox"><span class="switch-track"></span></span>
+          </label>
+
+          <div class="panel-box">
+            <h3>Credenciais da MisticPay</h3>
+            <p class="hint">Vêm do painel da MisticPay. O Client Secret fica guardado só neste computador e nunca volta para esta tela.</p>
+            <div class="field-row">
+              <div class="field">
+                <label for="mistic-client-id">Client ID</label>
+                <input id="mistic-client-id" class="input mono" type="text" autocomplete="off" spellcheck="false" placeholder="ci_…">
+              </div>
+              <div class="field">
+                <label for="mistic-client-secret">Client Secret</label>
+                <input id="mistic-client-secret" class="input mono" type="password" autocomplete="new-password" spellcheck="false" placeholder="cs_…">
+                <p id="mistic-secret-hint" class="hint"></p>
+              </div>
+            </div>
+            <div class="field">
+              <label for="mistic-auth-header">Header de autenticação <em>(opcional)</em></label>
+              <input id="mistic-auth-header" class="input mono" type="password" autocomplete="new-password" spellcheck="false" placeholder="Basic …">
+              <p class="hint">Deixe vazio: o sistema monta sozinho o header <span class="mono">Authorization: Basic …</span> com o Client ID e o Client Secret. Preencha só se você tiver um header pronto — ele passa a valer no lugar.</p>
+              <p id="mistic-auth-hint" class="hint"></p>
+            </div>
+            <div class="inline-form">
+              <button id="mistic-test-btn" class="btn btn-secondary btn-sm" type="button">Testar conexão</button>
+              <span id="mistic-test-result" class="hint" role="status"></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="mistic-default-document">CPF padrão do pagador</label>
+            <input id="mistic-default-document" class="input mono" type="text" inputmode="numeric" autocomplete="off" maxlength="14" placeholder="000.000.000-00">
+            <p class="hint">A MisticPay exige um CPF em toda cobrança (o PIX em si não pede, mas o gateway sim). Salve um aqui e ele é usado automaticamente, sem precisar pedir o CPF do cliente: só é preciso preencher o campo ao cobrar se quiser usar outro CPF naquela cobrança.</p>
+          </div>
+
+          <div class="field">
+            <label for="mistic-default-description">Descrição padrão do cliente aleatório</label>
+            <input id="mistic-default-description" class="input" type="text" maxlength="120" autocomplete="off" placeholder="Corrida">
+            <p class="hint">Em "Cliente aleatório" (para cobrar quem você atende em outro WhatsApp, sem o número aqui), o painel sorteia um nome e já preenche esta descrição. Você pode trocar os dois antes de cobrar.</p>
+          </div>
+
+          <div class="field">
+            <label for="mistic-float-where">Onde aparece o botão de cobrança</label>
+            <select id="mistic-float-where" class="select">
+              <option value="desktop">Solto na tela do computador, perto da conversa (recomendado)</option>
+              <option value="panel">Dentro da página deste painel</option>
+            </select>
+            <p class="hint">Solto na tela, ele fica por cima de qualquer programa (WhatsApp Web, WhatsApp Desktop...), dá pra arrastar para onde quiser e abre o modal numa janelinha ao lado. Só no Windows; se não puder iniciar, o painel mostra o botão dentro da página.</p>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="mistic-float-mode">Quando aparece</label>
+              <select id="mistic-float-mode" class="select">
+                <option value="conversation">Só durante uma conversa no privado</option>
+                <option value="always">Sempre visível</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="mistic-active-window">Conversa em andamento por</label>
+              <div class="input-suffix">
+                <input id="mistic-active-window" class="input" type="number" min="1" max="720" step="1" value="30">
+                <span>min</span>
+              </div>
+            </div>
+          </div>
+          <p class="hint">O WhatsApp não avisa qual conversa está aberta na sua tela. Vale a última em que houve mensagem — do cliente ou sua — dentro desse prazo.</p>
+
+          <label class="option">
+            <span class="option-text">
+              <strong>Enviar o QR Code de pagamento</strong>
+              <small>Além do PIX copia e cola, manda a imagem do QR Code.</small>
+            </span>
+            <span class="switch"><input id="mistic-send-qr" type="checkbox" checked><span class="switch-track"></span></span>
+          </label>
+
+          <label class="option">
+            <span class="option-text">
+              <strong>Agradecer quando o pagamento for identificado</strong>
+              <small>Manda a mensagem de agradecimento assim que a MisticPay confirmar o pagamento.</small>
+            </span>
+            <span class="switch"><input id="mistic-send-thanks" type="checkbox" checked><span class="switch-track"></span></span>
+          </label>
+
+          <div class="panel-box">
+            <h3>Mensagens enviadas ao cliente</h3>
+            <p class="hint">Marcadores: <span class="mono">{valor}</span> <span class="mono">{nome}</span> <span class="mono">{descricao}</span> <span class="mono">{numero}</span>. O PIX copia e cola vai sempre sozinho numa mensagem logo depois da primeira, para o cliente copiar fácil.</p>
+
+            <div class="field">
+              <div class="label-row">
+                <label for="mistic-charge-message">Mensagem da cobrança</label>
+                <button type="button" class="btn btn-ghost btn-sm" data-mistic-reset="chargeMessage">Restaurar padrão</button>
+              </div>
+              <textarea id="mistic-charge-message" class="input" rows="5"></textarea>
+            </div>
+
+            <div class="field">
+              <div class="label-row">
+                <label for="mistic-qr-caption">Legenda do QR Code</label>
+                <button type="button" class="btn btn-ghost btn-sm" data-mistic-reset="qrCaption">Restaurar padrão</button>
+              </div>
+              <input id="mistic-qr-caption" class="input" type="text" autocomplete="off">
+            </div>
+
+            <div class="field">
+              <div class="label-row">
+                <label for="mistic-thanks-message">Mensagem de agradecimento</label>
+                <button type="button" class="btn btn-ghost btn-sm" data-mistic-reset="thanksMessage">Restaurar padrão</button>
+              </div>
+              <textarea id="mistic-thanks-message" class="input" rows="3"></textarea>
+            </div>
+
+            <div class="field">
+              <div class="label-row">
+                <label for="mistic-copy-message">Texto de “Copiar cobrança”</label>
+                <button type="button" class="btn btn-ghost btn-sm" data-mistic-reset="copyMessage">Restaurar padrão</button>
+              </div>
+              <textarea id="mistic-copy-message" class="input" rows="5"></textarea>
+              <p class="hint">É o que vai para a área de transferência quando você copia a cobrança para colar em outro WhatsApp. Aceita também <span class="mono">{pix}</span> (o PIX copia e cola); se você não o colocar, o código vai no final do texto.</p>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -553,6 +765,215 @@
 
       <footer class="modal-foot">
         <button id="sticker-gallery-cancel" class="btn btn-ghost" type="button" data-close>Fechar</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ============ Botão flutuante da MisticPay ============ -->
+  <button id="pay-fab" class="pay-fab hidden" type="button" aria-label="Cobrar cliente (MisticPay)">
+    <svg class="icon"><use href="#i-bot"/></svg>
+    <span id="pay-fab-badge" class="pay-fab-badge hidden" aria-hidden="true">0</span>
+  </button>
+
+  <!-- ============ Modal: MisticPay (cobrar, sacar, histórico, extrato) ============ -->
+  <div id="pay-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="pay-modal-title">
+    <div class="modal-card modal-xl">
+      <header class="modal-head">
+        <div>
+          <h2 id="pay-modal-title">MisticPay</h2>
+          <p id="pay-modal-sub">Cobre clientes, acompanhe pagamentos e faça saques.</p>
+        </div>
+        <button type="button" class="icon-btn modal-close" data-close aria-label="Fechar"><svg class="icon"><use href="#i-x"/></svg></button>
+      </header>
+
+      <div class="modal-body">
+        <div class="pay-account">
+          <div class="pay-stat"><span>Saldo disponível</span><strong id="pay-balance">—</strong></div>
+          <div class="pay-stat"><span>Bloqueado</span><strong id="pay-blocked">—</strong></div>
+          <div class="pay-stat pay-stat-wide">
+            <span id="pay-user-name">Conta MisticPay</span>
+            <small id="pay-user-meta"></small>
+          </div>
+          <button id="pay-refresh" class="icon-btn icon-btn-sm" type="button" title="Atualizar saldo" aria-label="Atualizar saldo"><svg class="icon"><use href="#i-refresh"/></svg></button>
+        </div>
+        <div id="pay-account-error" class="callout callout-warning hidden">
+          <svg class="icon"><use href="#i-alert"/></svg>
+          <p id="pay-account-error-text"></p>
+        </div>
+
+        <div class="segmented" role="radiogroup" aria-label="Seção da MisticPay">
+          <label><input type="radio" name="pay-tab" value="charge" checked><span><svg class="icon"><use href="#i-send"/></svg> Cobrar</span></label>
+          <label><input type="radio" name="pay-tab" value="withdraw"><span><svg class="icon"><use href="#i-upload"/></svg> Sacar</span></label>
+          <label><input type="radio" name="pay-tab" value="history"><span><svg class="icon"><use href="#i-list-checks"/></svg> Cobranças <em id="pay-pending-count"></em></span></label>
+          <label><input type="radio" name="pay-tab" value="statement"><span><svg class="icon"><use href="#i-dollar"/></svg> Extrato</span></label>
+        </div>
+
+        <!-- Cobrar -->
+        <section id="pay-panel-charge" class="pay-panel">
+          <div class="field">
+            <label for="pay-contact">Cliente</label>
+            <select id="pay-contact" class="select"></select>
+            <p id="pay-contact-hint" class="hint"></p>
+          </div>
+          <div id="pay-phone-wrap" class="field hidden">
+            <label for="pay-phone">Número do cliente</label>
+            <input id="pay-phone" class="input" type="tel" inputmode="tel" autocomplete="off" placeholder="(11) 99999-9999">
+            <p class="hint">Com DDD. O sistema confere se o número tem WhatsApp antes de cobrar.</p>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="pay-amount">Valor</label>
+              <div class="input-prefix"><span>R$</span><input id="pay-amount" class="input" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="0,00" data-autofocus></div>
+            </div>
+            <div class="field">
+              <label for="pay-description">Descrição <em>(opcional)</em></label>
+              <input id="pay-description" class="input" type="text" maxlength="120" autocomplete="off" placeholder="Ex.: Corrida até o aeroporto">
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <div class="label-row">
+                <label for="pay-payer-name">Nome do pagador <em>(opcional)</em></label>
+                <button id="pay-random-name" type="button" class="btn btn-ghost btn-sm hidden"><svg class="icon"><use href="#i-dice"/></svg> Sortear outro</button>
+              </div>
+              <input id="pay-payer-name" class="input" type="text" maxlength="80" autocomplete="off" placeholder="Usa o nome do cliente no WhatsApp">
+            </div>
+            <div class="field">
+              <label for="pay-payer-document">CPF do pagador</label>
+              <input id="pay-payer-document" class="input mono" type="text" inputmode="numeric" maxlength="14" autocomplete="off" placeholder="000.000.000-00">
+              <label id="pay-save-document-wrap" class="inline-check hidden"><input id="pay-save-document" type="checkbox" checked> Usar este CPF em todas as cobranças</label>
+              <p id="pay-document-hint" class="hint"></p>
+            </div>
+          </div>
+
+          <div class="panel-box pay-preview">
+            <h3 id="pay-preview-title">O cliente vai receber</h3>
+            <div id="pay-preview-charge" class="pay-bubble"></div>
+            <div id="pay-preview-code" class="pay-bubble pay-bubble-code">00020126…  <em>(PIX copia e cola, em mensagem separada)</em></div>
+            <div id="pay-preview-qr" class="pay-bubble pay-bubble-qr"></div>
+          </div>
+        </section>
+
+        <!-- Sacar -->
+        <section id="pay-panel-withdraw" class="pay-panel hidden">
+          <div class="callout callout-warning">
+            <svg class="icon"><use href="#i-alert"/></svg>
+            <p>O saque sai do seu saldo disponível na MisticPay e não pode ser desfeito. Confira o valor e a chave PIX antes de confirmar.</p>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="withdraw-amount">Valor do saque</label>
+              <div class="input-prefix"><span>R$</span><input id="withdraw-amount" class="input" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="0,00"></div>
+              <p id="withdraw-balance-hint" class="hint"></p>
+            </div>
+            <div class="field">
+              <label for="withdraw-key-type">Tipo da chave PIX</label>
+              <select id="withdraw-key-type" class="select">
+                <option value="CPF">CPF</option>
+                <option value="CNPJ">CNPJ</option>
+                <option value="EMAIL">E-mail</option>
+                <option value="TELEFONE">Telefone</option>
+                <option value="CHAVE_ALEATORIA">Chave aleatória</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label for="withdraw-key">Chave PIX</label>
+            <input id="withdraw-key" class="input mono" type="text" autocomplete="off" spellcheck="false" placeholder="000.000.000-00">
+          </div>
+          <div class="field">
+            <label for="withdraw-description">Descrição <em>(opcional)</em></label>
+            <input id="withdraw-description" class="input" type="text" maxlength="120" autocomplete="off" placeholder="Ex.: Retirada do mês">
+          </div>
+        </section>
+
+        <!-- Cobranças e saques feitos pelo painel -->
+        <section id="pay-panel-history" class="pay-panel hidden">
+          <ul id="pay-history" class="stack-list"></ul>
+        </section>
+
+        <!-- Extrato da conta na MisticPay -->
+        <section id="pay-panel-statement" class="pay-panel hidden">
+          <ul id="pay-statement" class="stack-list stack-list-compact"></ul>
+          <div class="pay-pager">
+            <button id="pay-statement-prev" class="btn btn-ghost btn-sm" type="button">‹ Anterior</button>
+            <span id="pay-statement-page" class="hint"></span>
+            <button id="pay-statement-next" class="btn btn-ghost btn-sm" type="button">Próxima ›</button>
+          </div>
+        </section>
+      </div>
+
+      <footer class="modal-foot">
+        <button id="pay-open-settings" class="btn btn-ghost" type="button">Configurar MisticPay</button>
+        <button id="pay-close" class="btn btn-ghost" type="button" data-close>Fechar</button>
+        <button id="pay-copy" class="btn btn-secondary" type="button" title="Cria a cobrança sem enviar nada pelo WhatsApp do bot e copia o texto para você colar onde atende">
+          <svg class="icon"><use href="#i-copy"/></svg> <span>Copiar cobrança</span>
+        </button>
+        <button id="pay-submit" class="btn btn-primary" type="button" data-submit>
+          <svg class="icon"><use href="#i-send"/></svg> <span>Enviar cobrança</span>
+        </button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ============ Modal: conta de WhatsApp ============ -->
+  <div id="account-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="account-modal-title">
+    <div class="modal-card">
+      <header class="modal-head">
+        <div>
+          <h2 id="account-modal-title">Conta de WhatsApp</h2>
+          <p id="account-modal-sub">Conexão, nome e QR Code desta conta.</p>
+        </div>
+        <button type="button" class="icon-btn modal-close" data-close aria-label="Fechar"><svg class="icon"><use href="#i-x"/></svg></button>
+      </header>
+
+      <div class="modal-body">
+        <div class="field">
+          <label for="account-name-input">Nome da conta</label>
+          <div class="inline-form">
+            <input id="account-name-input" class="input" type="text" maxlength="40" autocomplete="off" placeholder="Ex.: WhatsApp da loja">
+            <button id="account-rename-btn" class="btn btn-secondary" type="button">Salvar nome</button>
+          </div>
+        </div>
+
+        <div id="account-conn" class="conn" data-state="checking">
+          <span class="conn-dot"></span>
+          <div class="conn-text">
+            <strong id="account-conn-title">Verificando…</strong>
+            <small id="account-conn-sub"></small>
+          </div>
+        </div>
+
+        <div id="account-qr-box" class="qr-box hidden">
+          <div class="qr-frame">
+            <img id="account-qr-img" alt="QR Code para conectar o WhatsApp" width="260" height="260">
+            <span id="account-qr-loading" class="qr-loading"><span class="spinner"></span> Gerando QR Code…</span>
+          </div>
+          <ol class="qr-steps">
+            <li>No celular, abra o <strong>WhatsApp</strong>.</li>
+            <li>Vá em <strong>Configurações › Aparelhos conectados</strong> (no iPhone) ou toque nos <strong>três pontinhos › Aparelhos conectados</strong> (no Android).</li>
+            <li>Toque em <strong>Conectar um aparelho</strong> e aponte a câmera para este código.</li>
+          </ol>
+        </div>
+
+        <div class="field">
+          <span class="label">Ações</span>
+          <div class="account-actions">
+            <button id="account-logout-btn" class="btn btn-secondary" type="button">
+              <svg class="icon"><use href="#i-log-out"/></svg> Desconectar / trocar número
+            </button>
+            <button id="account-remove-btn" class="btn btn-danger" type="button">
+              <svg class="icon"><use href="#i-trash"/></svg> Remover conta
+            </button>
+          </div>
+          <p id="account-actions-hint" class="hint"></p>
+        </div>
+      </div>
+
+      <footer class="modal-foot">
+        <button id="account-close" class="btn btn-ghost" type="button" data-close>Fechar</button>
       </footer>
     </div>
   </div>

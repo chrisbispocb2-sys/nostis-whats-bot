@@ -1,16 +1,12 @@
 import type { WASocket, WAMessage } from "baileys-joss";
 import { toNumber } from "baileys-joss";
+import type { Account } from "../core/account";
 import { KeywordService } from "../services/keyword.service";
 import { StickerCollectorService } from "../services/sticker-collector.service";
 import { responseService } from "../services/response.service";
 import { identityService } from "../services/identity.service";
-import { botState } from "../core/state";
-import { callLeadStore } from "../core/lead-store";
-import { settingsStore } from "../core/settings-store";
-import { banStore } from "../core/ban-store";
-import { callerStore } from "../core/caller-store";
-import { groupDelayStore } from "../core/group-delay-store";
-import { phoneFromJid } from "../utils/jid";
+import { isReaction, readContent } from "../utils/message-content";
+import { isPersonalChat, phoneFromJid } from "../utils/jid";
 import { CONFIG } from "../config";
 import { logger } from "../utils/logger";
 
@@ -19,23 +15,46 @@ function nameLooksLikeAdmin(pushName: string | null | undefined): boolean {
   return /adm/i.test(pushName);
 }
 
+/** Horário da mensagem em ms (o WhatsApp manda em segundos), ou undefined se não veio. */
+function messageTimeMs(msg: WAMessage): number | undefined {
+  const seconds = toNumber(msg.messageTimestamp);
+  return seconds ? seconds * 1000 : undefined;
+}
+
 export class MessageHandler {
-  private keywordService = new KeywordService();
-  private stickerCollector = new StickerCollectorService();
+  private keywordService: KeywordService;
+  private stickerCollector: StickerCollectorService;
+
+  constructor(private readonly account: Account) {
+    this.keywordService = new KeywordService(account.keywords);
+    this.stickerCollector = new StickerCollectorService(account.stickers, account.bot);
+  }
 
   public async handle(sock: WASocket, msg: WAMessage): Promise<void> {
-    if (!msg.key || msg.key.fromMe) return;
+    if (!msg.key) return;
+
+    if (msg.key.fromMe) {
+      await this.handleOwnMessage(sock, msg);
+      return;
+    }
+
+    const { bot, bans, callers, leads, settings, groupDelays, greeting, guard } = this.account;
 
     // Ignora backlog: histórico e mensagens que chegaram enquanto o bot estava desconectado/inativo
     const messageTimestamp = toNumber(msg.messageTimestamp);
-    if (messageTimestamp && messageTimestamp < botState.activatedAt) return;
+    if (messageTimestamp && messageTimestamp < bot.activatedAt) return;
 
     const remoteJid = msg.key.remoteJid;
     if (!remoteJid) return;
 
     if (!remoteJid.endsWith("@g.us")) {
+      if (!isPersonalChat(remoteJid)) return;
+
+      // Em conversas com LID o contato vem oculto; ban, leads e regras usam o telefone real
+      const contactJid = await identityService.resolveContactJid(sock, msg, remoteJid);
+
       // Mensagem privada de alguém banido: avisa e não processa como contato normal
-      if (banStore.isBanned(remoteJid)) {
+      if (bans.isBanned(contactJid)) {
         try {
           await sock.sendMessage(remoteJid, { text: CONFIG.banWarningMessage });
         } catch (err) {
@@ -45,8 +64,24 @@ export class MessageHandler {
       }
 
       // Mensagem privada: correlaciona com métricas e registra contato
-      callLeadStore.markPrivateContact(remoteJid);
-      callerStore.registerCall(remoteJid, msg.pushName ?? null);
+      leads.markPrivateContact(contactJid);
+      callers.registerCall(contactJid, msg.pushName ?? null);
+      greeting.handlePrivateMessage(sock, msg, remoteJid, [contactJid, remoteJid]);
+
+      if (readContent(msg)) {
+        // Segurança: começa a contar o tempo até alguém responder essa conversa
+        guard.onClientMessage(remoteJid, [contactJid, remoteJid], messageTimeMs(msg));
+
+        // É com quem você está falando agora (o botão de cobrança do painel usa isso)
+        this.account.conversations.touch({
+          chatJid: remoteJid,
+          jids: [contactJid, remoteJid],
+          phone: contactJid.endsWith("@s.whatsapp.net") ? phoneFromJid(contactJid) : null,
+          name: msg.pushName ?? null,
+          from: "client",
+          at: messageTimeMs(msg),
+        });
+      }
       return;
     }
 
@@ -54,18 +89,18 @@ export class MessageHandler {
     const participantJid = await identityService.resolveParticipantJid(sock, msg, remoteJid);
 
     // Pessoa banida: ignora
-    if (banStore.isBanned(participantJid)) return;
+    if (bans.isBanned(participantJid)) return;
 
     // Ignora nomes de administrador caso configurado
-    if (settingsStore.get().ignoreAdminNames && nameLooksLikeAdmin(msg.pushName)) return;
+    if (settings.get().ignoreAdminNames && nameLooksLikeAdmin(msg.pushName)) return;
 
     // Coleta figurinhas vistas para a galeria
     if (msg.message?.stickerMessage) {
       void this.stickerCollector.collect(sock, msg, remoteJid);
     }
 
-    if (!botState.active) return;
-    if (!botState.isGroupEnabled(remoteJid)) return;
+    if (!bot.active) return;
+    if (!bot.isGroupEnabled(remoteJid)) return;
 
     const messageText =
       msg.message?.conversation ||
@@ -78,17 +113,17 @@ export class MessageHandler {
     if (!rule) return;
 
     const groupName =
-      botState.groups.find((g) => g.jid === remoteJid)?.name ?? remoteJid;
+      bot.groups.find((g) => g.jid === remoteJid)?.name ?? remoteJid;
 
     if (rule.trackMetrics) {
-      callLeadStore.recordTrigger({
+      leads.recordTrigger({
         ruleId: rule.id,
         groupJid: remoteJid,
         groupName,
         callerJid: participantJid,
         callerName: msg.pushName ?? null,
       });
-      callerStore.registerCall(participantJid, msg.pushName ?? null);
+      callers.registerCall(participantJid, msg.pushName ?? null);
     }
 
     if (rule.reactionEmoji) {
@@ -98,7 +133,7 @@ export class MessageHandler {
     this.keywordService.markTriggered(rule.id, remoteJid);
 
     // Número na lista "sem resposta": conta gatilho/métrica mas não envia texto
-    if (!settingsStore.isNoReplyNumber(phoneFromJid(participantJid))) {
+    if (!settings.isNoReplyNumber(phoneFromJid(participantJid))) {
       const randomResponse =
         rule.responses[Math.floor(Math.random() * rule.responses.length)];
 
@@ -108,9 +143,42 @@ export class MessageHandler {
         randomResponse,
         rule,
         msg,
-        groupDelayStore.get(remoteJid),
-        groupName
+        groupDelays.get(remoteJid),
+        groupName,
+        this.account
       );
+
+      // Quando essa pessoa escrever no privado, o bot puxa a conversa e pergunta os endereços
+      if (rule.greetingEnabled) {
+        greeting.registerTrigger([participantJid, msg.key.participant], rule.id);
+      }
     }
+  }
+
+  /**
+   * Mensagem enviada pela própria conta. Se foi você respondendo no privado
+   * (e não o bot), o bot não puxa a conversa por cima e a segurança sabe que
+   * tem alguém atendendo.
+   */
+  private async handleOwnMessage(sock: WASocket, msg: WAMessage): Promise<void> {
+    const chatJid = msg.key.remoteJid;
+    if (!chatJid || !isPersonalChat(chatJid)) return;
+    if (this.account.sent.has(msg.key.id)) return;
+    if (!readContent(msg) && !isReaction(msg)) return;
+
+    const contactJid = await identityService.resolveContactJid(sock, msg, chatJid);
+    const jids = [chatJid, msg.key.remoteJidAlt, contactJid].filter((j): j is string => !!j);
+
+    this.account.greeting.cancelForChat(jids);
+    this.account.guard.onOperatorReply(jids, messageTimeMs(msg));
+
+    this.account.conversations.touch({
+      chatJid,
+      jids,
+      phone: contactJid.endsWith("@s.whatsapp.net") ? phoneFromJid(contactJid) : null,
+      name: null,
+      from: "operator",
+      at: messageTimeMs(msg),
+    });
   }
 }

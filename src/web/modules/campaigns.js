@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { api } from "./api.js";
+import { api, accountUrl } from "./api.js";
 import { escapeHtml, fileToDataUrl, convertImageToStickerWebp, readImageAsMedia } from "./utils.js";
 import { renderCampaignGroupPicker } from "./groups.js";
 import {
@@ -35,7 +35,7 @@ const campaignGroupsCountEl = document.getElementById("campaign-groups-count");
 const campaignSaveBtn = document.getElementById("campaign-save");
 
 export async function fetchLibraryStickerAsMedia(id) {
-  const r = await fetch(`/stickers/${encodeURIComponent(id)}/media`);
+  const r = await fetch(accountUrl(`/stickers/${encodeURIComponent(id)}/media`));
   if (!r.ok) throw new Error("Não foi possível carregar a figurinha da galeria.");
   const blob = await r.blob();
   const dataUrl = await fileToDataUrl(blob);
@@ -94,7 +94,7 @@ export function renderCampaigns() {
       const media = mediaMeta(c);
       const thumb =
         c.mediaType !== "none"
-          ? `<img class="camp-thumb" src="/campaigns/${encodeURIComponent(c.id)}/media?t=${c.updatedAt}" alt="" loading="lazy">`
+          ? `<img class="camp-thumb" src="${accountUrl(`/campaigns/${encodeURIComponent(c.id)}/media`)}?t=${c.updatedAt}" alt="" loading="lazy">`
           : `<span class="camp-thumb">${icon("megaphone")}</span>`;
       const sending = state.campaignPollTimers.has(c.id);
 
@@ -189,7 +189,7 @@ export function openCampaignModal(id) {
   setMediaType(mediaType);
 
   if (campaign && mediaType !== "none") {
-    campaignMediaImg.src = `/campaigns/${encodeURIComponent(campaign.id)}/media?t=${campaign.updatedAt}`;
+    campaignMediaImg.src = `${accountUrl(`/campaigns/${encodeURIComponent(campaign.id)}/media`)}?t=${campaign.updatedAt}`;
     campaignMediaPreview.classList.remove("hidden");
   } else {
     campaignMediaPreview.classList.add("hidden");

@@ -1,6 +1,5 @@
 import { JsonFileStore } from "./base-store";
 import { normalizeJid } from "../utils/jid";
-import { PATHS } from "../config/paths";
 
 export interface BanEntry {
   jid: string;
@@ -8,9 +7,9 @@ export interface BanEntry {
   bannedAt: number;
 }
 
-class BanStore extends JsonFileStore<BanEntry[]> {
-  constructor() {
-    super(PATHS.bans, []);
+export class BanStore extends JsonFileStore<BanEntry[]> {
+  constructor(file: string) {
+    super(file, []);
   }
 
   list(): BanEntry[] {
@@ -46,5 +45,3 @@ class BanStore extends JsonFileStore<BanEntry[]> {
     return true;
   }
 }
-
-export const banStore = new BanStore();

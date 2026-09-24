@@ -28,6 +28,12 @@ const ruleReplyModeWrap = document.getElementById("rule-reply-mode-wrap");
 const useUrlButtonInput = document.getElementById("rule-use-url-button");
 const buttonTextWrap = document.getElementById("rule-button-text-wrap");
 const buttonTextInput = document.getElementById("rule-button-text");
+const buttonMessageInput = document.getElementById("rule-button-message");
+const greetingEnabledInput = document.getElementById("rule-greeting-enabled");
+const greetingWrap = document.getElementById("rule-greeting-wrap");
+const greetingMessagesInput = document.getElementById("rule-greeting-messages");
+const greetingPartialInput = document.getElementById("rule-greeting-partial");
+const greetingCompleteInput = document.getElementById("rule-greeting-complete");
 const ruleSaveBtn = document.getElementById("rule-save");
 
 const updateKeywordsCount = bindLineCounter(keywordsInput, document.getElementById("rule-keywords-count"), "gatilho", "gatilhos");
@@ -40,6 +46,14 @@ function keywordChips(keywords) {
     shown.push(`<span class="kw-chip kw-more" title="${rest}">+${keywords.length - 3}</span>`);
   }
   return shown.join("");
+}
+
+/** Linhas não vazias de um textarea (uma variação de mensagem por linha). */
+function linesOf(textarea) {
+  return textarea.value
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function replyModeMeta(rule) {
@@ -88,6 +102,18 @@ export function renderRules() {
           ${r.trackMetrics ? `<span class="meta-item">${icon("chart")} Rastreando</span>` : ""}
         </div>
 
+        <div class="card-toggle-row">
+          <span class="card-toggle-text">
+            <strong>${icon("message")} Saudação no privado</strong>
+            <small>Pergunta os endereços a quem chama</small>
+          </span>
+          <label class="switch" title="${r.greetingEnabled ? "Desligar saudação no privado" : "Ligar saudação no privado"}">
+            <input type="checkbox" class="rule-greeting-toggle" data-id="${r.id}" ${r.greetingEnabled ? "checked" : ""} aria-label="Saudação automática no privado">
+            <span class="switch-track"></span>
+            <span class="switch-label">${r.greetingEnabled ? "Ligada" : "Desligada"}</span>
+          </label>
+        </div>
+
         <div class="card-foot">
           <button type="button" class="btn btn-secondary btn-sm edit-rule" data-id="${r.id}">${icon("pencil")} Editar</button>
           <div class="card-actions end">
@@ -106,6 +132,9 @@ export function renderRules() {
   });
   rulesListEl.querySelectorAll(".rule-toggle").forEach((input) => {
     input.addEventListener("change", () => toggleRule(input.dataset.id, input));
+  });
+  rulesListEl.querySelectorAll(".rule-greeting-toggle").forEach((input) => {
+    input.addEventListener("change", () => toggleGreeting(input.dataset.id, input));
   });
 }
 
@@ -147,6 +176,35 @@ async function toggleRule(id, input) {
   }
 }
 
+/** Liga/desliga a saudação no privado direto pelo card (atualização otimista com rollback). */
+async function toggleGreeting(id, input) {
+  const rule = state.allRules.find((r) => r.id === id);
+  if (!rule) return;
+
+  const greetingEnabled = input.checked;
+  const label = input.closest(".switch");
+  const setLabel = (on) => {
+    label.querySelector(".switch-label").textContent = on ? "Ligada" : "Desligada";
+    label.title = on ? "Desligar saudação no privado" : "Ligar saudação no privado";
+  };
+  setLabel(greetingEnabled);
+
+  try {
+    await api(`/rules/${encodeURIComponent(id)}`, { method: "PUT", body: { greetingEnabled } });
+    rule.greetingEnabled = greetingEnabled;
+    notify.success(
+      greetingEnabled
+        ? "Quem chamar no grupo por essa regra recebe a saudação quando escrever no seu privado."
+        : "O bot não puxa mais a conversa no privado nessa regra.",
+      { title: greetingEnabled ? "Saudação ligada" : "Saudação desligada", duration: 2400 }
+    );
+  } catch (err) {
+    input.checked = !greetingEnabled;
+    setLabel(!greetingEnabled);
+    notify.error(err.message, { title: "Não foi possível alterar a saudação" });
+  }
+}
+
 export function openRuleModal(id) {
   state.editingRuleId = id ?? null;
   const rule = id ? state.allRules.find((r) => r.id === id) : null;
@@ -172,7 +230,14 @@ export function openRuleModal(id) {
 
   useUrlButtonInput.checked = rule ? !!rule.useUrlButton : false;
   buttonTextInput.value = rule && rule.buttonText ? rule.buttonText : "";
+  buttonMessageInput.value = rule && rule.buttonMessage ? rule.buttonMessage : "";
   applyUrlButtonVisibility();
+
+  greetingEnabledInput.checked = rule ? !!rule.greetingEnabled : false;
+  greetingMessagesInput.value = rule ? (rule.greetingMessages ?? []).join("\n") : "";
+  greetingPartialInput.value = rule ? (rule.greetingPartialMessages ?? []).join("\n") : "";
+  greetingCompleteInput.value = rule ? (rule.greetingCompleteMessages ?? []).join("\n") : "";
+  applyGreetingVisibility();
   updateKeywordsCount();
   updateResponsesCount();
 
@@ -183,6 +248,10 @@ export function applyUrlButtonVisibility() {
   const usingButton = useUrlButtonInput.checked;
   buttonTextWrap.classList.toggle("hidden", !usingButton);
   ruleReplyModeWrap.classList.toggle("hidden", usingButton);
+}
+
+export function applyGreetingVisibility() {
+  greetingWrap.classList.toggle("hidden", !greetingEnabledInput.checked);
 }
 
 export function closeRuleModal() {
@@ -206,11 +275,31 @@ export async function saveRule() {
   const reactionEmoji = document.querySelector('input[name="rule-reaction"]:checked').value || null;
   const useUrlButton = useUrlButtonInput.checked;
   const buttonText = buttonTextInput.value.trim() || null;
+  const buttonMessage = buttonMessageInput.value.trim() || null;
+  const greetingEnabled = greetingEnabledInput.checked;
+  const greetingMessages = linesOf(greetingMessagesInput);
+  const greetingPartialMessages = linesOf(greetingPartialInput);
+  const greetingCompleteMessages = linesOf(greetingCompleteInput);
 
   if (keywords.length === 0) return flagInvalid(keywordsInput, "Informe ao menos uma mensagem-gatilho.");
   if (responses.length === 0) return flagInvalid(responsesInput, "Informe ao menos uma resposta.");
 
-  const payload = { keywords, responses, cooldownMinutes, replyToTrigger, reactionEmoji, trackMetrics, useUrlButton, buttonText, enabled };
+  const payload = {
+    keywords,
+    responses,
+    cooldownMinutes,
+    replyToTrigger,
+    reactionEmoji,
+    trackMetrics,
+    useUrlButton,
+    buttonText,
+    buttonMessage,
+    greetingEnabled,
+    greetingMessages,
+    greetingPartialMessages,
+    greetingCompleteMessages,
+    enabled,
+  };
   const editing = !!state.editingRuleId;
 
   setBusy(ruleSaveBtn, true, "Salvando…");
@@ -252,6 +341,7 @@ export async function deleteRule(id) {
 
 export function initRules() {
   useUrlButtonInput.addEventListener("change", applyUrlButtonVisibility);
+  greetingEnabledInput.addEventListener("change", applyGreetingVisibility);
   newRuleBtn.addEventListener("click", () => openRuleModal(null));
   ruleSaveBtn.addEventListener("click", saveRule);
   bindModal(ruleModal, closeRuleModal);

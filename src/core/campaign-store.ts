@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "
 import { join, dirname } from "path";
 import { randomUUID } from "crypto";
 import { isValidStickerWebP } from "baileys-joss";
-import { profileStore } from "./profile-store";
+import type { ProfileStore } from "./profile-store";
 
 export type CampaignMediaType = "none" | "sticker" | "image";
 
@@ -34,14 +34,6 @@ export interface CampaignInput {
   removeMedia?: boolean;
 }
 
-function campaignsFile(): string {
-  return join(profileStore.activeDir(), "campaigns.json");
-}
-
-function mediaDir(): string {
-  return join(profileStore.activeDir(), "campaign-media");
-}
-
 function extFromMime(mime: string): string {
   if (mime.includes("webp")) return "webp";
   if (mime.includes("png")) return "png";
@@ -50,15 +42,23 @@ function extFromMime(mime: string): string {
   return "bin";
 }
 
-class CampaignStore {
+export class CampaignStore {
   private campaigns: Campaign[] = [];
 
-  constructor() {
+  constructor(private readonly profiles: ProfileStore) {
     this.load();
   }
 
+  private campaignsFile(): string {
+    return join(this.profiles.activeDir(), "campaigns.json");
+  }
+
+  private mediaDir(): string {
+    return join(this.profiles.activeDir(), "campaign-media");
+  }
+
   private load(): void {
-    const file = campaignsFile();
+    const file = this.campaignsFile();
     if (!existsSync(file)) {
       this.campaigns = [];
       return;
@@ -73,7 +73,7 @@ class CampaignStore {
 
   private save(): void {
     try {
-      const file = campaignsFile();
+      const file = this.campaignsFile();
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, JSON.stringify(this.campaigns, null, 2), "utf-8");
     } catch (err) {
@@ -96,7 +96,7 @@ class CampaignStore {
 
   getMediaPath(campaign: Campaign): string | null {
     if (!campaign.mediaFile) return null;
-    return join(mediaDir(), campaign.mediaFile);
+    return join(this.mediaDir(), campaign.mediaFile);
   }
 
   /** Grava a mídia em disco. Para figurinhas, valida que o webp é realmente válido antes de salvar. */
@@ -113,7 +113,7 @@ class CampaignStore {
       }
     }
 
-    const dir = mediaDir();
+    const dir = this.mediaDir();
     mkdirSync(dir, { recursive: true });
     const ext = media.type === "sticker" ? "webp" : extFromMime(media.mimeType);
     const filename = `${id}-${Date.now()}.${ext}`;
@@ -124,7 +124,7 @@ class CampaignStore {
   private deleteMediaFile(campaign: Campaign): void {
     if (!campaign.mediaFile) return;
     try {
-      unlinkSync(join(mediaDir(), campaign.mediaFile));
+      unlinkSync(join(this.mediaDir(), campaign.mediaFile));
     } catch {
       // ignora se já não existir
     }
@@ -201,5 +201,3 @@ class CampaignStore {
     return true;
   }
 }
-
-export const campaignStore = new CampaignStore();
