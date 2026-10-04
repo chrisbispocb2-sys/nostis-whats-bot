@@ -6,11 +6,17 @@ import { icon, notify, bindModal, openModal, closeModal, flagInvalid, setBusy, e
 
 const settingsBtn = document.getElementById("settings-btn");
 const settingsModal = document.getElementById("settings-modal");
+const settingsNotificationSoundInput = document.getElementById("settings-notification-sound");
 const settingsIgnoreAdmInput = document.getElementById("settings-ignore-adm");
 const settingsNoReplyNumbersInput = document.getElementById("settings-no-reply-numbers");
+const settingsIgnoreDddsEnabledInput = document.getElementById("settings-ignore-ddds-enabled");
+const settingsIgnoredDddsInput = document.getElementById("settings-ignored-ddds");
 const settingsAutoShutdownInput = document.getElementById("settings-auto-shutdown");
 const settingsAutoShutdownWrap = document.getElementById("settings-auto-shutdown-wrap");
 const settingsAutoShutdownMinutesInput = document.getElementById("settings-auto-shutdown-minutes");
+const settingsAwayEnabledInput = document.getElementById("settings-away-enabled");
+const settingsAwayWrap = document.getElementById("settings-away-wrap");
+const settingsAwayMessageInput = document.getElementById("settings-away-message");
 const settingsBansListEl = document.getElementById("settings-bans-list");
 const settingsSaveBtn = document.getElementById("settings-save");
 
@@ -37,12 +43,19 @@ const mistic = {
   thanksMessage: document.getElementById("mistic-thanks-message"),
   copyMessage: document.getElementById("mistic-copy-message"),
   defaultDescription: document.getElementById("mistic-default-description"),
+  withdrawPasswordCurrentWrap: document.getElementById("mistic-withdraw-password-current-wrap"),
+  withdrawPasswordCurrent: document.getElementById("mistic-withdraw-password-current"),
+  withdrawPasswordNew: document.getElementById("mistic-withdraw-password-new"),
+  withdrawPasswordConfirm: document.getElementById("mistic-withdraw-password-confirm"),
+  withdrawPasswordHint: document.getElementById("mistic-withdraw-password-hint"),
 };
 
 // Configuração da MisticPay lida do servidor (null = ainda não carregou, então não é enviada ao salvar)
 let misticConfig = null;
 let clearSecret = false;
 let clearAuthHeader = false;
+let clearWithdrawPassword = false;
+let awayDefault = ""; // texto padrão do recado automático, vindo do servidor
 
 export function renderSettingsBansList() {
   if (state.allBans.length === 0) {
@@ -80,6 +93,10 @@ function applyAutoShutdownVisibility() {
   settingsAutoShutdownWrap.classList.toggle("hidden", !settingsAutoShutdownInput.checked);
 }
 
+function applyAwayVisibility() {
+  settingsAwayWrap.classList.toggle("hidden", !settingsAwayEnabledInput.checked);
+}
+
 /* ---------- MisticPay ---------- */
 
 function setSettingsTab(tab) {
@@ -98,10 +115,29 @@ function paintSecretHints() {
   mistic.authHint.innerHTML = hint(misticConfig?.hasAuthHeader, clearAuthHeader, "header");
 }
 
+function paintWithdrawPasswordHint() {
+  const has = !!misticConfig?.hasWithdrawPassword;
+  mistic.withdrawPasswordCurrentWrap.classList.toggle("hidden", !has);
+
+  if (clearWithdrawPassword) {
+    mistic.withdrawPasswordHint.innerHTML =
+      'A senha de saque será removida ao salvar — o saque fica bloqueado até criar outra. <button type="button" class="btn btn-ghost btn-sm" data-mistic-undo="withdrawPassword">Desfazer</button>';
+  } else if (has) {
+    mistic.withdrawPasswordHint.innerHTML =
+      'Já configurada. Deixe os campos em branco para manter, ou <button type="button" class="btn btn-ghost btn-sm" data-mistic-clear="withdrawPassword">remova-a</button> (o saque fica bloqueado até criar outra).';
+  } else {
+    mistic.withdrawPasswordHint.textContent = "Nenhuma senha criada ainda — o saque fica bloqueado até criar uma.";
+  }
+}
+
 async function loadMisticConfig() {
   misticConfig = null;
   clearSecret = false;
   clearAuthHeader = false;
+  clearWithdrawPassword = false;
+  mistic.withdrawPasswordCurrent.value = "";
+  mistic.withdrawPasswordNew.value = "";
+  mistic.withdrawPasswordConfirm.value = "";
   mistic.testResult.textContent = "";
   mistic.testResult.className = "hint";
 
@@ -126,6 +162,7 @@ async function loadMisticConfig() {
   mistic.copyMessage.value = cfg.copyMessage || cfg.defaults.copyMessage;
   mistic.defaultDescription.value = cfg.defaultDescription;
   paintSecretHints();
+  paintWithdrawPasswordHint();
 }
 
 /** Monta o que vai pro servidor. Segredo vazio = mantém o salvo; "Remover" manda null. */
@@ -154,7 +191,33 @@ function collectMisticPayload() {
   if (header) payload.authHeader = header;
   else if (clearAuthHeader) payload.authHeader = null;
 
+  const newWithdrawPassword = mistic.withdrawPasswordNew.value;
+  if (clearWithdrawPassword) payload.withdrawPassword = null;
+  else if (newWithdrawPassword) payload.withdrawPassword = newWithdrawPassword;
+  if (misticConfig?.hasWithdrawPassword && (clearWithdrawPassword || newWithdrawPassword)) {
+    payload.currentWithdrawPassword = mistic.withdrawPasswordCurrent.value;
+  }
+
   return payload;
+}
+
+/** A senha de saque nova (se houver) foi digitada certinho, e a atual foi informada quando necessário? */
+function withdrawPasswordFormOk() {
+  const current = mistic.withdrawPasswordCurrent.value;
+  const next = mistic.withdrawPasswordNew.value;
+  const confirm = mistic.withdrawPasswordConfirm.value;
+  const changingOrRemoving = clearWithdrawPassword || !!next;
+
+  if (misticConfig?.hasWithdrawPassword && changingOrRemoving && !current) {
+    return { ok: false, field: mistic.withdrawPasswordCurrent, message: "Informe a senha de saque atual para trocá-la ou removê-la." };
+  }
+  if (next && next.length < 4) {
+    return { ok: false, field: mistic.withdrawPasswordNew, message: "A nova senha de saque precisa ter pelo menos 4 caracteres." };
+  }
+  if (next && next !== confirm) {
+    return { ok: false, field: mistic.withdrawPasswordConfirm, message: "A confirmação não bate com a nova senha de saque." };
+  }
+  return { ok: true };
 }
 
 /** Tem credenciais (digitadas agora ou já salvas e não removidas)? */
@@ -192,12 +255,20 @@ async function testMistic() {
 export async function openSettingsModal({ tab = "general" } = {}) {
   try {
     const settings = await api("/settings");
+    settingsNotificationSoundInput.checked = settings.notificationSoundEnabled !== false;
     settingsIgnoreAdmInput.checked = settings.ignoreAdminNames;
     settingsNoReplyNumbersInput.value = settings.noReplyNumbers.join("\n");
+    settingsIgnoreDddsEnabledInput.checked = !!settings.ignoreGroupDddsEnabled;
+    settingsIgnoredDddsInput.value = settings.ignoredGroupDdds.join("\n");
     settingsAutoShutdownInput.checked = !!settings.autoShutdownEnabled;
     settingsAutoShutdownMinutesInput.value = settings.autoShutdownMinutes ?? 5;
     settingsAutoShutdownMinutesInput.classList.remove("is-invalid");
     applyAutoShutdownVisibility();
+
+    awayDefault = settings.defaults?.awayMessage ?? "";
+    settingsAwayEnabledInput.checked = !!settings.awayMessageEnabled;
+    settingsAwayMessageInput.value = settings.awayMessage || awayDefault;
+    applyAwayVisibility();
   } catch (err) {
     console.error("openSettingsModal falhou:", err);
     notify.error(err.message, { title: "Não foi possível carregar as configurações" });
@@ -218,13 +289,21 @@ export async function openSettingsModal({ tab = "general" } = {}) {
 }
 
 export async function saveSettings() {
+  const notificationSoundEnabled = settingsNotificationSoundInput.checked;
   const ignoreAdminNames = settingsIgnoreAdmInput.checked;
   const noReplyNumbers = settingsNoReplyNumbersInput.value
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
+  const ignoreGroupDddsEnabled = settingsIgnoreDddsEnabledInput.checked;
+  const ignoredGroupDdds = settingsIgnoredDddsInput.value
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const autoShutdownEnabled = settingsAutoShutdownInput.checked;
   const autoShutdownMinutes = Math.floor(Number(settingsAutoShutdownMinutesInput.value));
+  const awayMessageEnabled = settingsAwayEnabledInput.checked;
+  const awayMessage = settingsAwayMessageInput.value.trim();
 
   if (autoShutdownEnabled && !(autoShutdownMinutes >= 1)) {
     setSettingsTab("general");
@@ -234,24 +313,44 @@ export async function saveSettings() {
     setSettingsTab("mistic");
     return flagInvalid(mistic.clientId, "Preencha o Client ID e o Client Secret (ou desligue a integração).");
   }
+  if (misticConfig) {
+    const withdrawCheck = withdrawPasswordFormOk();
+    if (!withdrawCheck.ok) {
+      setSettingsTab("mistic");
+      return flagInvalid(withdrawCheck.field, withdrawCheck.message);
+    }
+  }
 
   setBusy(settingsSaveBtn, true, "Salvando…");
   try {
     await api("/settings", {
       method: "PUT",
       body: {
+        notificationSoundEnabled,
         ignoreAdminNames,
         noReplyNumbers,
+        ignoreGroupDddsEnabled,
+        ignoredGroupDdds,
         autoShutdownEnabled,
         ...(autoShutdownMinutes >= 1 ? { autoShutdownMinutes } : {}),
+        awayMessageEnabled,
+        awayMessage,
       },
     });
     // Só envia a MisticPay se ela foi carregada (senão um erro de leitura apagaria a configuração)
     if (misticConfig) {
       await api("/mistic/config", { method: "PUT", body: collectMisticPayload() });
       document.dispatchEvent(new CustomEvent("mistic-config-changed"));
+      // Não deixa a senha de saque (nem a tentativa de troca) sobrando na tela depois de salvar
+      clearWithdrawPassword = false;
+      mistic.withdrawPasswordCurrent.value = "";
+      mistic.withdrawPasswordNew.value = "";
+      mistic.withdrawPasswordConfirm.value = "";
     }
     closeModal(settingsModal);
+    // Ligar o recado com o bot ligado desliga o bot: o cabeçalho relê o estado sozinho, mas já avisa aqui
+    if (awayMessageEnabled) document.dispatchEvent(new CustomEvent("bot-settings-changed"));
+    document.dispatchEvent(new CustomEvent("notification-sound-changed", { detail: { enabled: notificationSoundEnabled } }));
     notify.success("As novas configurações já estão valendo.", { title: "Configurações salvas" });
   } catch (err) {
     notify.error(err.message, { title: "Não foi possível salvar" });
@@ -264,7 +363,12 @@ export function initSettings() {
   settingsBtn.addEventListener("click", () => openSettingsModal());
   settingsSaveBtn.addEventListener("click", saveSettings);
   settingsAutoShutdownInput.addEventListener("change", applyAutoShutdownVisibility);
+  settingsAwayEnabledInput.addEventListener("change", applyAwayVisibility);
   bindModal(settingsModal, () => closeModal(settingsModal));
+
+  generalSection.addEventListener("click", (e) => {
+    if (e.target.closest("[data-away-reset]")) settingsAwayMessageInput.value = awayDefault;
+  });
 
   document.querySelectorAll('input[name="settings-tab"]').forEach((radio) => {
     radio.addEventListener("change", () => radio.checked && setSettingsTab(radio.value));
@@ -280,8 +384,10 @@ export function initSettings() {
     if (!which) return;
     const value = !!clear;
     if (which === "secret") clearSecret = value;
-    else clearAuthHeader = value;
+    else if (which === "header") clearAuthHeader = value;
+    else if (which === "withdrawPassword") clearWithdrawPassword = value;
     paintSecretHints();
+    paintWithdrawPasswordHint();
   });
 
   // "Restaurar padrão" das mensagens

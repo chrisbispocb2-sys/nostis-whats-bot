@@ -8,14 +8,17 @@ import { fakeConnections, tempDirs, type FakeConnection } from "../testing/fakes
 let dirs: ReturnType<typeof tempDirs>;
 let created: FakeConnection[];
 let factory: ReturnType<typeof fakeConnections>["factory"];
+let managers: AccountManager[];
 
 function newManager() {
-  return new AccountManager({
+  const manager = new AccountManager({
     appDataDir: dirs.appDataDir,
     tempDir: dirs.tempDir,
     createConnection: factory,
     notify: () => {},
   });
+  managers.push(manager);
+  return manager;
 }
 
 /** Chama a API do painel como o navegador chamaria. */
@@ -34,12 +37,18 @@ async function api(manager: AccountManager, method: string, path: string, body?:
 
 beforeEach(() => {
   dirs = tempDirs();
+  managers = [];
   const fake = fakeConnections();
   created = fake.created;
   factory = fake.factory;
 });
 
-afterEach(() => dirs.cleanup());
+afterEach(() => {
+  // Fecha o SQLite do histórico de chat antes de apagar a pasta: no Windows, apagar um
+  // arquivo com handle aberto falha (EBUSY).
+  for (const manager of managers) manager.stopAll();
+  dirs.cleanup();
+});
 
 describe("contas", () => {
   test("na primeira execução existe uma conta, que usa a pasta de dados de sempre", () => {
@@ -282,11 +291,60 @@ describe("API do painel", () => {
     const manager = newManager();
     const account = manager.get("default")!;
     await api(manager, "PUT", "/accounts/default/settings", { autoShutdownEnabled: true });
+    account.guard.registerGroupCall(["5511977770000@s.whatsapp.net"]);
     account.guard.onClientMessage("5511977770000@s.whatsapp.net", []);
     expect(account.guard.pendingCount).toBe(1);
 
     await api(manager, "PUT", "/accounts/default/settings", { autoShutdownEnabled: false });
     expect(account.guard.pendingCount).toBe(0);
+  });
+
+  test("status traz se o recado automático está ligado", async () => {
+    const manager = newManager();
+    expect((await api(manager, "GET", "/accounts/default/status")).json.away).toEqual({ enabled: false });
+
+    await api(manager, "PUT", "/accounts/default/settings", { awayMessageEnabled: true });
+    expect((await api(manager, "GET", "/accounts/default/status")).json.away).toEqual({ enabled: true });
+  });
+
+  test("ligar o recado automático com o bot ligado desliga o bot agora", async () => {
+    const manager = newManager();
+    const account = manager.get("default")!;
+    expect(account.bot.active).toBe(true);
+
+    const res = await api(manager, "PUT", "/accounts/default/settings", { awayMessageEnabled: true });
+    expect(res.json).toMatchObject({ awayMessageEnabled: true, botActive: false });
+    expect(account.bot.active).toBe(false);
+    expect((await api(manager, "GET", "/accounts/default/status")).json.active).toBe(false);
+  });
+
+  test("com o bot já desligado, ligar o recado não mexe em nada além da opção", async () => {
+    const manager = newManager();
+    const account = manager.get("default")!;
+    account.setBotActive(false);
+
+    await api(manager, "PUT", "/accounts/default/settings", { awayMessageEnabled: true });
+    expect(account.bot.active).toBe(false);
+  });
+
+  test("desligar o recado automático não liga o bot de volta", async () => {
+    const manager = newManager();
+    const account = manager.get("default")!;
+    await api(manager, "PUT", "/accounts/default/settings", { awayMessageEnabled: true }); // desliga o bot
+    await api(manager, "PUT", "/accounts/default/settings", { awayMessageEnabled: false });
+    expect(account.bot.active).toBe(false);
+  });
+
+  test("a mensagem do recado é limitada, sem espaços sobrando, e o padrão vem na resposta", async () => {
+    const manager = newManager();
+    const before = await api(manager, "GET", "/accounts/default/settings");
+    expect(before.json.defaults.awayMessage.length).toBeGreaterThan(10);
+
+    const res = await api(manager, "PUT", "/accounts/default/settings", { awayMessage: "  Voltamos já!  " });
+    expect(res.json.awayMessage).toBe("Voltamos já!");
+
+    const long = await api(manager, "PUT", "/accounts/default/settings", { awayMessage: "x".repeat(600) });
+    expect(long.json.awayMessage.length).toBe(500);
   });
 
   test("QR Code: 404 sem QR, imagem PNG com QR", async () => {

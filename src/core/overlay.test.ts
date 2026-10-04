@@ -167,7 +167,16 @@ class FakeProc implements SpawnedProcess {
   }
 }
 
-function setup(accountsList: OverlayAccount[], options: { platform?: string; browser?: string | null; restartDelayMs?: number } = {}) {
+function setup(
+  accountsList: OverlayAccount[],
+  options: {
+    platform?: string;
+    browser?: string | null;
+    restartDelayMs?: number;
+    hasActiveSession?: () => boolean;
+    issuePayToken?: (accountId: string) => string;
+  } = {}
+) {
   const spawned: FakeProc[] = [];
   const overlay = new Overlay({
     accounts: () => accountsList,
@@ -184,6 +193,8 @@ function setup(accountsList: OverlayAccount[], options: { platform?: string; bro
     findBrowser: () => (options.browser === undefined ? "C:\\chrome.exe" : options.browser),
     script: "# script de teste",
     restartDelayMs: options.restartDelayMs ?? 5,
+    hasActiveSession: options.hasActiveSession,
+    issuePayToken: options.issuePayToken,
   });
   return { overlay, spawned };
 }
@@ -316,6 +327,27 @@ describe("processo do botão", () => {
     expect(spawned[0]!.command.slice(0, 3)).toEqual(["cmd", "/c", "start"]);
     expect(spawned[0]!.hide).toBe(true);
     expect(() => overlay.openPayWindow("nao-existe")).toThrow("Conta não encontrada");
+  });
+
+  test("sem essas opções (login desligado), abre normalmente sem token na URL", () => {
+    const a = account("A");
+    const { overlay, spawned } = setup([a]);
+    overlay.openPayWindow(a.id);
+    expect(spawned[0]!.command).toContain(`--app=http://127.0.0.1:3000/?pay=1&account=${a.id}`);
+  });
+
+  test("com login ativo, recusa abrir sem ninguém logado em lugar nenhum", () => {
+    const a = account("A");
+    const { overlay, spawned } = setup([a], { hasActiveSession: () => false });
+    expect(() => overlay.openPayWindow(a.id)).toThrow("Nenhuma sessão ativa");
+    expect(spawned).toEqual([]);
+  });
+
+  test("com login ativo e alguém logado, abre e embute o pay-token na URL", () => {
+    const a = account("A");
+    const { overlay, spawned } = setup([a], { hasActiveSession: () => true, issuePayToken: (id) => `token-${id}` });
+    overlay.openPayWindow(a.id);
+    expect(spawned[0]!.command).toContain(`--app=http://127.0.0.1:3000/?pay=1&account=${a.id}&token=token-${a.id}`);
   });
 });
 

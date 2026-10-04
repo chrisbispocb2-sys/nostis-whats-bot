@@ -85,7 +85,7 @@ export function renderAccountRail() {
   // Só redesenha quando algo visível mudou (evita piscar as fotos a cada leitura)
   const signature = JSON.stringify([
     state.activeAccountId,
-    state.accounts.map((a) => [a.id, a.name, a.phone, accountState(a), a.guardPending]),
+    state.accounts.map((a) => [a.id, a.name, a.phone, accountState(a), a.guardPending, a.unreadChats]),
   ]);
   if (signature === railSignature) return;
   railSignature = signature;
@@ -95,14 +95,17 @@ export function renderAccountRail() {
       const st = accountState(a);
       const active = a.id === state.activeAccountId;
       const picture = a.connected ? `${accountUrl("/avatar", a.id)}?v=${encodeURIComponent(a.phone || "")}` : null;
-      const label = `${a.name} — ${STATE_LABEL[st]}${a.guardPending ? ` — ${a.guardPending} conversa(s) esperando resposta` : ""}`;
+      const unreadLabel = a.unreadChats > 0 ? ` — ${a.unreadChats} conversa(s) não lida(s)` : "";
+      const label = `${a.name} — ${STATE_LABEL[st]}${a.guardPending ? ` — ${a.guardPending} conversa(s) esperando resposta` : ""}${unreadLabel}`;
       const badge = a.guardPending > 0 ? `<span class="account-badge" aria-hidden="true">${a.guardPending}</span>` : "";
+      const unreadBadge = a.unreadChats > 0 ? `<span class="account-unread-badge" aria-hidden="true">${a.unreadChats > 99 ? "99+" : a.unreadChats}</span>` : "";
       return `
       <li class="account-item ${active ? "is-active" : ""}" data-state="${st}">
         <button type="button" class="account-btn" data-id="${escapeHtml(a.id)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}" ${active ? 'aria-current="true"' : ""}>
           ${avatarHtml(a.name, { pictureUrl: picture, size: "rail" })}
           <span class="account-dot" aria-hidden="true"></span>
           ${badge}
+          ${unreadBadge}
         </button>
       </li>`;
     })

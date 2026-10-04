@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { checkRequestOrigin } from "./request-guard";
+import { checkRequestOrigin, isPanelOrigin } from "./request-guard";
 
 const PORT = 3000;
 
@@ -54,5 +54,29 @@ describe("proteção do painel contra outros sites", () => {
     const res = checkRequestOrigin(req("POST", { host: `127.0.0.1:${PORT}`, origin: "https://x.com" }), PORT)!;
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error: string }).error).toContain("Origem não permitida");
+  });
+});
+
+describe("isPanelOrigin (WebSocket do chat em tempo real)", () => {
+  test("aceita o próprio painel, com Origin batendo", () => {
+    expect(isPanelOrigin(req("GET", { host: `127.0.0.1:${PORT}`, origin: `http://127.0.0.1:${PORT}` }), PORT)).toBe(true);
+    expect(isPanelOrigin(req("GET", { host: `localhost:${PORT}`, origin: `http://localhost:${PORT}` }), PORT)).toBe(true);
+    expect(isPanelOrigin(req("GET", { host: `[::1]:${PORT}`, origin: `http://[::1]:${PORT}` }), PORT)).toBe(true);
+  });
+
+  test("recusa sem Origin, mesmo sendo GET (diferente de checkRequestOrigin: aqui a conexão fica aberta)", () => {
+    expect(isPanelOrigin(req("GET", { host: `127.0.0.1:${PORT}` }), PORT)).toBe(false);
+  });
+
+  test("recusa Origin de outro site (o handshake de WebSocket sempre manda Origin de verdade)", () => {
+    expect(isPanelOrigin(req("GET", { host: `127.0.0.1:${PORT}`, origin: "https://site-malicioso.com" }), PORT)).toBe(false);
+  });
+
+  test("recusa Host errado (DNS rebinding)", () => {
+    expect(isPanelOrigin(req("GET", { host: "evil.example.com", origin: `http://127.0.0.1:${PORT}` }), PORT)).toBe(false);
+  });
+
+  test("recusa outra porta do mesmo computador", () => {
+    expect(isPanelOrigin(req("GET", { host: `127.0.0.1:${PORT}`, origin: "http://127.0.0.1:8080" }), PORT)).toBe(false);
   });
 });

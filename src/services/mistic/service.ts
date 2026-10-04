@@ -84,6 +84,8 @@ export interface MisticDeps {
   onPaid?(record: ChargeRecord): void;
   /** Você fez algo na conversa (criou uma cobrança): conta como "tem alguém atendendo". */
   onOperatorAction(chatJid: string): void;
+  /** O agradecimento final do pagamento acabou de ser enviado de verdade (pra desafixar a conversa, por exemplo). */
+  onThanksSent?(chatJid: string): void;
   fetch?: typeof fetch;
   baseUrl?: string;
   limiter?: RateLimiter;
@@ -114,6 +116,8 @@ export interface WithdrawRequest {
   pixKeyType: string;
   pixKey: string;
   description?: string;
+  /** Exigida antes de qualquer saque (ver MisticStore.assertWithdrawPassword). */
+  withdrawPassword?: string;
 }
 
 const MAX_THANKS_ATTEMPTS = 8;
@@ -477,6 +481,7 @@ export class MisticService {
       const text = renderTemplate(this.deps.store.messages().thanksMessage, this.valuesFor(record));
       await this.deps.sender.sendText(record.chatJid, text);
       this.deps.charges.update(id, { thanksSent: true });
+      this.deps.onThanksSent?.(record.chatJid);
     } catch (err) {
       logger.warn({ err, account: this.deps.accountName(), chargeId: id }, "Não foi possível enviar o agradecimento (vai tentar de novo)");
     }
@@ -545,6 +550,9 @@ export class MisticService {
 
   async withdraw(input: WithdrawRequest): Promise<ChargeRecord> {
     this.assertConfigured();
+    // Sem a senha de saque certa, nem chega a olhar o resto do pedido — é a última linha de defesa
+    // contra alguém com acesso ao computador (ou ao painel) sacar sem autorização
+    this.deps.store.assertWithdrawPassword(input.withdrawPassword);
 
     const cents = parseAmountToCents(input.amount);
     if (cents === null) throw validation("Informe um valor de saque válido (com no máximo 2 casas decimais).");

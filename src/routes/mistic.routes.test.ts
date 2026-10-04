@@ -11,6 +11,7 @@ const CLIENT = "5511977770000@s.whatsapp.net";
 const VALID_CPF = "52998224725";
 const SECRET = "cs_SEGREDO_super_secreto_123";
 const AUTH_HEADER = "Basic SEGREDO_DO_HEADER";
+const WITHDRAW_PASSWORD = "senha-do-saque";
 
 const FAST: MisticTiming = { tickMs: 1000, maxChecksPerTick: 5, messageGapMs: 0, thanksRetryGapMs: 0, intervalFor: () => 0 };
 
@@ -76,7 +77,7 @@ async function api(method: string, path: string, body?: unknown) {
   return { status: res?.status ?? 0, json, text };
 }
 
-const cfg = { enabled: true, clientId: "ci_123", clientSecret: SECRET, defaultPayerDocument: VALID_CPF };
+const cfg = { enabled: true, clientId: "ci_123", clientSecret: SECRET, defaultPayerDocument: VALID_CPF, withdrawPassword: WITHDRAW_PASSWORD };
 
 beforeEach(() => {
   dirs = tempDirs();
@@ -123,6 +124,8 @@ describe("configuração da MisticPay", () => {
       expect(text).not.toContain("SEGREDO_DO_HEADER");
       expect(text).not.toContain("clientSecret");
       expect(text).not.toContain("authHeader");
+      expect(text).not.toContain(WITHDRAW_PASSWORD);
+      expect(text).not.toContain("withdrawPasswordHash");
     }
     // e a configuração geral do bot também não vaza
     const general = await api("GET", "/accounts/default/settings");
@@ -252,6 +255,7 @@ describe("cobrança de ponta a ponta", () => {
 
   test("as mensagens da cobrança são do bot: o eco delas não cancela a segurança", async () => {
     account.settings.update({ autoShutdownEnabled: true });
+    account.guard.registerGroupCall([CLIENT]); // precisa ter sido chamada num grupo pra contar
     await connection.deliver(privateText(CLIENT, "Oi de novo")); // começa a contagem
     expect(account.guard.pendingCount).toBe(1);
 
@@ -259,7 +263,9 @@ describe("cobrança de ponta a ponta", () => {
     // criar a cobrança é você atendendo → a contagem é satisfeita
     expect(account.guard.pendingCount).toBe(0);
 
-    // o cliente escreve de novo e o WhatsApp devolve as mensagens do bot como fromMe: não valem como resposta
+    // o cliente escreve de novo (chamada nela de novo no grupo) e o WhatsApp devolve as mensagens do
+    // bot como fromMe: não valem como resposta
+    account.guard.registerGroupCall([CLIENT]);
     await connection.deliver(privateText(CLIENT, "ok, vou pagar"));
     expect(account.guard.pendingCount).toBe(1);
     for (const m of connection.sock.sent.filter((s) => s.jid === CLIENT)) {
@@ -396,7 +402,7 @@ describe("saque", () => {
   });
 
   test("pede o saque e ele aparece no histórico sem a chave completa", async () => {
-    const res = await api("POST", "/accounts/default/mistic/withdraw", { amount: 100, pixKeyType: "CPF", pixKey: "529.982.247-25", description: "Retirada" });
+    const res = await api("POST", "/accounts/default/mistic/withdraw", { amount: 100, pixKeyType: "CPF", pixKey: "529.982.247-25", description: "Retirada", withdrawPassword: WITHDRAW_PASSWORD });
     expect(res.status).toBe(200);
     expect(res.json.withdrawal).toMatchObject({ kind: "withdraw", status: "pending", amountCents: 10000, pixKeyType: "CPF", pixKeyMasked: "•••••••4725" });
     expect(res.text).not.toContain(VALID_CPF);
@@ -407,16 +413,46 @@ describe("saque", () => {
   });
 
   test("valida e barra repetição", async () => {
-    expect((await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "CPF", pixKey: "123" })).status).toBe(400);
-    expect((await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "EMAIL", pixKey: "a@b.co" })).status).toBe(200);
-    const again = await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "EMAIL", pixKey: "a@b.co" });
+    expect((await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "CPF", pixKey: "123", withdrawPassword: WITHDRAW_PASSWORD })).status).toBe(400);
+    expect((await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "EMAIL", pixKey: "a@b.co", withdrawPassword: WITHDRAW_PASSWORD })).status).toBe(200);
+    const again = await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "EMAIL", pixKey: "a@b.co", withdrawPassword: WITHDRAW_PASSWORD });
     expect(again.status).toBe(400);
     expect(again.json.error).toContain("idêntico");
   });
 
   test("com a integração desligada não saca", async () => {
     await api("PUT", "/accounts/default/mistic/config", { enabled: false });
-    expect((await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "EMAIL", pixKey: "a@b.co" })).status).toBe(409);
+    expect((await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "EMAIL", pixKey: "a@b.co", withdrawPassword: WITHDRAW_PASSWORD })).status).toBe(409);
+  });
+
+  test("sem senha de saque configurada: bloqueado", async () => {
+    await api("PUT", "/accounts/default/mistic/config", { withdrawPassword: null, currentWithdrawPassword: WITHDRAW_PASSWORD });
+    const res = await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "EMAIL", pixKey: "a@b.co", withdrawPassword: WITHDRAW_PASSWORD });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toContain("Crie uma senha de saque");
+  });
+
+  test("senha de saque errada: recusa e não saca", async () => {
+    const res = await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "EMAIL", pixKey: "a@b.co", withdrawPassword: "errada" });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toContain("incorreta");
+    expect(misticCalls.some((c) => c.path === "/transactions/withdraw")).toBe(false);
+  });
+
+  test("trocar a senha de saque exige a senha atual; sem ela (ou errada), recusa", async () => {
+    const semAtual = await api("PUT", "/accounts/default/mistic/config", { withdrawPassword: "nova-senha" });
+    expect(semAtual.status).toBe(400);
+
+    const atualErrada = await api("PUT", "/accounts/default/mistic/config", { withdrawPassword: "nova-senha", currentWithdrawPassword: "chuta" });
+    expect(atualErrada.status).toBe(400);
+
+    // com a senha atual certa, funciona — e passa a valer a nova
+    const ok = await api("PUT", "/accounts/default/mistic/config", { withdrawPassword: "nova-senha", currentWithdrawPassword: WITHDRAW_PASSWORD });
+    expect(ok.status).toBe(200);
+    expect(ok.json.hasWithdrawPassword).toBe(true);
+
+    expect((await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "EMAIL", pixKey: "a@b.co", withdrawPassword: WITHDRAW_PASSWORD })).status).toBe(400);
+    expect((await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "EMAIL", pixKey: "a@b.co", withdrawPassword: "nova-senha" })).status).toBe(200);
   });
 });
 
@@ -460,7 +496,7 @@ describe("métricas preenchidas pelo pagamento", () => {
   });
 
   test("saque concluído não entra no recebido", async () => {
-    const withdrawal = await api("POST", "/accounts/default/mistic/withdraw", { amount: 100, pixKeyType: "CPF", pixKey: VALID_CPF });
+    const withdrawal = await api("POST", "/accounts/default/mistic/withdraw", { amount: 100, pixKeyType: "CPF", pixKey: VALID_CPF, withdrawPassword: WITHDRAW_PASSWORD });
     states[withdrawal.json.withdrawal.misticId] = "COMPLETO";
     await account.mistic.tick();
     expect((await api("GET", "/accounts/default/leads")).json.payments.todayCents).toBe(0);
@@ -539,7 +575,7 @@ describe("copiar cobrança, cliente aleatório e excluir", () => {
 
     expect((await api("DELETE", `/accounts/default/mistic/charges/${a.json.charge.id}`)).status).toBe(400);
 
-    const withdrawal = await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "CPF", pixKey: VALID_CPF });
+    const withdrawal = await api("POST", "/accounts/default/mistic/withdraw", { amount: 10, pixKeyType: "CPF", pixKey: VALID_CPF, withdrawPassword: WITHDRAW_PASSWORD });
     expect((await api("DELETE", `/accounts/default/mistic/charges/${withdrawal.json.withdrawal.id}`)).status).toBe(400);
   });
 

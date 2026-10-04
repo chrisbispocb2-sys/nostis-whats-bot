@@ -36,6 +36,43 @@ export class FakeSock {
 
   profilePictureUrl = async () => null;
 
+  /** Remoções/promoções/rebaixamentos/adições de participante pedidos pelo painel, só anotados. */
+  participantUpdates: Array<{ jid: string; participants: string[]; action: string }> = [];
+  /** Testes trocam pra simular o WhatsApp recusando um participante específico (ex.: "add" negado pela privacidade dele). */
+  participantUpdateStatus: string = "200";
+  groupParticipantsUpdate = async (jid: string, participants: string[], action: string) => {
+    this.participantUpdates.push({ jid, participants, action });
+    // devolve um array — é o formato de verdade do baileys (uma entrada por participante)
+    return participants.map((p) => ({ status: this.participantUpdateStatus, jid: p, content: {} as never }));
+  };
+
+  /** Testes trocam pra simular um código de convite específico (ou ausência dele). */
+  inviteCode: string | undefined = "ABC123";
+  groupInviteCode = async (_jid: string) => this.inviteCode;
+  groupRevokeInvite = async (_jid: string) => {
+    this.inviteCode = "NOVO456";
+    return this.inviteCode;
+  };
+
+  /** Pedidos de entrada pendentes (grupo com aprovação de admin ligada) — testes preenchem direto. */
+  pendingJoinRequests: Array<{ jid: string; request_method?: string; request_time?: string }> = [];
+  /** Pedidos aprovados/recusados pelo painel, só anotados. */
+  joinRequestUpdates: Array<{ jid: string; participants: string[]; action: "approve" | "reject" }> = [];
+  groupRequestParticipantsList = async (_jid: string) => this.pendingJoinRequests;
+  groupRequestParticipantsUpdate = async (jid: string, participants: string[], action: "approve" | "reject") => {
+    this.joinRequestUpdates.push({ jid, participants, action });
+    this.pendingJoinRequests = this.pendingJoinRequests.filter((r) => !participants.includes(r.jid));
+    return participants.map((p) => ({ status: "200", jid: p }));
+  };
+
+  /** Testes substituem por um valor próprio quando precisam verificar os dados do grupo. */
+  groupMetadata = async (jid: string) => ({
+    id: jid,
+    subject: "Grupo",
+    owner: undefined,
+    participants: [] as Array<{ id: string; phoneNumber?: string; name?: string; notify?: string; admin?: "admin" | "superadmin" | null }>,
+  });
+
   /** Números que "existem no WhatsApp" (só dígitos) → JID devolvido. */
   registered: Record<string, string> = {};
 
@@ -87,6 +124,11 @@ export class FakeConnection implements Connection {
   /** Simula uma mensagem chegando do WhatsApp. */
   deliver(msg: WAMessage): Promise<void> {
     return this.options.onMessage(this.getSock(), msg);
+  }
+
+  /** Simula o WhatsApp avisando que uma mensagem enviada mudou de status (entregue, lida...). */
+  deliverStatus(chatJid: string, id: string, status: number): void {
+    this.options.onMessageUpdate?.({ remoteJid: chatJid, id }, status);
   }
 }
 

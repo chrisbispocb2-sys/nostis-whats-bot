@@ -1,6 +1,15 @@
 import { state } from "./state.js";
 
 /**
+ * Token da janela de pagamento (perfil de navegador isolado, sem o cookie de sessão do painel
+ * principal — ver AuthService.issuePayToken). Só existe no modo `?pay=1`.
+ */
+let payToken = null;
+export function setPayToken(token) {
+  payToken = token;
+}
+
+/**
  * Endereço de uma rota da conta de WhatsApp ativa. Serve pra chamadas manuais
  * (fetch, <img src>...) que não passam pelo `api()` abaixo.
  */
@@ -12,12 +21,13 @@ export function accountUrl(path, accountId = state.activeAccountId) {
  * Wrapper de fetch: devolve o JSON da resposta ou lança um Error com uma
  * mensagem já pronta para o usuário (usada direto nos toasts).
  *
- * Rotas que começam com "/accounts" (as contas em si) ou "/overlay" (o botão
- * solto na tela) não pertencem a uma conta; todas as outras (`/rules`,
- * `/groups`...) vão para a conta ativa no momento da chamada.
+ * Rotas que começam com "/accounts" (as contas em si), "/overlay" (o botão
+ * solto na tela) ou "/auth" (login/convites, independe de qual conta está
+ * ativa) não pertencem a uma conta; todas as outras (`/rules`, `/groups`...)
+ * vão para a conta ativa no momento da chamada.
  */
 export async function api(path, { method = "GET", body } = {}) {
-  const scoped = !path.startsWith("/accounts") && !path.startsWith("/overlay");
+  const scoped = !path.startsWith("/accounts") && !path.startsWith("/overlay") && !path.startsWith("/auth");
   const accountId = state.activeAccountId;
   if (scoped && !accountId) throw new Error("Nenhuma conta de WhatsApp selecionada.");
 
@@ -26,6 +36,7 @@ export async function api(path, { method = "GET", body } = {}) {
     init.headers = { "Content-Type": "application/json" };
     init.body = JSON.stringify(body);
   }
+  if (payToken) init.headers = { ...init.headers, "X-Pay-Token": payToken };
 
   let res;
   try {
@@ -35,7 +46,9 @@ export async function api(path, { method = "GET", body } = {}) {
   }
 
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Falha na requisição (status ${res.status}).`);
+  // Além da mensagem, leva junto os outros campos do erro (ex.: `needsAmount`) — quem chamar pode
+  // reagir a um motivo específico sem precisar adivinhar pelo texto da mensagem.
+  if (!res.ok) throw Object.assign(new Error(data.error || `Falha na requisição (status ${res.status}).`), data);
 
   // Leitura de uma conta que já não é a da tela (o usuário trocou no meio da chamada):
   // descarta em silêncio pra não pintar dados de uma conta na tela de outra. Gravações

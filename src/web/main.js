@@ -10,6 +10,10 @@ import { refreshLeads, initMetrics, resetMetrics } from "./modules/metrics.js";
 import { refreshProfiles, initProfiles } from "./modules/profiles.js";
 import { initSettings } from "./modules/settings.js";
 import { initSidebarResizer } from "./modules/sidebar.js";
+import { refreshChat, initChat, resetChat } from "./modules/chat.js";
+import { initContextMenu } from "./modules/context-menu.js";
+import { guardAuth, initAccessControl, applyFeatureLocks, refreshUsersIfAdmin } from "./modules/auth.js";
+import { setPayToken } from "./modules/api.js";
 
 /* ---------- Abas (Regras / Propaganda / Métricas) ---------- */
 
@@ -48,15 +52,22 @@ tabBtns.forEach((btn) => {
   btn.addEventListener("click", () => selectTab(btn));
 });
 
+// A aba de Administração começa escondida (só admin) e só é revelada depois do login — ignora
+// abas escondidas na navegação e na restauração, senão a pessoa pode cair numa aba invisível.
+function visibleTabs() {
+  return tabBtns.filter((b) => !b.classList.contains("hidden"));
+}
+
 // Setas esquerda/direita, Home e End navegam entre as abas (padrão WAI-ARIA)
 tabsEl.addEventListener("keydown", (e) => {
-  const idx = tabBtns.indexOf(document.activeElement);
+  const visible = visibleTabs();
+  const idx = visible.indexOf(document.activeElement);
   if (idx === -1) return;
   let next = null;
-  if (e.key === "ArrowRight") next = tabBtns[(idx + 1) % tabBtns.length];
-  else if (e.key === "ArrowLeft") next = tabBtns[(idx - 1 + tabBtns.length) % tabBtns.length];
-  else if (e.key === "Home") next = tabBtns[0];
-  else if (e.key === "End") next = tabBtns[tabBtns.length - 1];
+  if (e.key === "ArrowRight") next = visible[(idx + 1) % visible.length];
+  else if (e.key === "ArrowLeft") next = visible[(idx - 1 + visible.length) % visible.length];
+  else if (e.key === "Home") next = visible[0];
+  else if (e.key === "End") next = visible[visible.length - 1];
   if (!next) return;
   e.preventDefault();
   selectTab(next, { focus: true });
@@ -68,7 +79,7 @@ try {
 } catch {
   // localStorage indisponível
 }
-selectTab(tabBtns.find((b) => b.dataset.tab === savedTab) ?? tabBtns[0]);
+selectTab(visibleTabs().find((b) => b.dataset.tab === savedTab) ?? visibleTabs()[0]);
 window.addEventListener("resize", moveTabIndicator);
 if (document.fonts?.ready) document.fonts.ready.then(moveTabIndicator);
 // Os contadores das abas mudam de largura depois do carregamento inicial
@@ -81,6 +92,7 @@ function refreshAll() {
   resetBotStatus();
   resetPay();
   resetMetrics();
+  resetChat();
   return Promise.all([
     refreshStatus(),
     refreshGroups(),
@@ -89,6 +101,7 @@ function refreshAll() {
     refreshLeads(),
     refreshProfiles(),
     refreshPay(),
+    refreshChat(),
   ]);
 }
 
@@ -103,6 +116,9 @@ function startPayWindow() {
   // O botão solto na tela encontra a janela por este título
   document.title = "Brinzy MisticPay - Cobrar";
   state.activeAccountId = params.get("account");
+  // Perfil de navegador isolado (sem o cookie de sessão do painel principal): o pay-token do
+  // servidor autoriza só esta conta, por um tempo curto — ver AuthService.issuePayToken.
+  setPayToken(params.get("token"));
 
   initPay({ standalone: true });
   refreshPay().then(openPayModal);
@@ -122,7 +138,10 @@ function startPanel() {
   initProfiles();
   initSettings();
   initPay();
+  initChat();
   initSidebarResizer();
+  initAccessControl();
+  applyFeatureLocks();
 
   /* ---------- Carga inicial ---------- */
 
@@ -148,19 +167,35 @@ function startPanel() {
   every(2000, refreshStatus);
   every(3000, refreshAccounts);
   every(3000, refreshPay);
+  // Conversas: tem seu próprio ciclo (mais rápido sem WebSocket, mais espaçado quando ele está ligado)
   every(10000, refreshGroups);
   every(5000, refreshLeads); // as métricas acompanham os pagamentos sozinhas
+  every(20000, refreshUsersIfAdmin); // "quem está online" no painel de administração
 
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       refreshStatus();
       refreshAccounts();
       refreshPay();
+      refreshChat();
       refreshGroups();
       refreshLeads();
+      refreshUsersIfAdmin();
     }
   });
 }
 
-if (params.get("pay") === "1") startPayWindow();
-else startPanel();
+(async function boot() {
+  // A janela de pagamento se autentica pelo pay-token (perfil de navegador isolado, sem cookie de
+  // sessão) — não passa pela tela de login, que exigiria logar de novo toda vez que ela abre.
+  if (params.get("pay") === "1") {
+    startPayWindow();
+    return;
+  }
+
+  const { blocked } = await guardAuth();
+  if (blocked) return;
+
+  initContextMenu();
+  startPanel();
+})();

@@ -11,6 +11,7 @@ import { handleLeadRoutes } from "./lead.routes";
 import { handleStickerRoutes } from "./sticker.routes";
 import { handleSettingsRoutes } from "./settings.routes";
 import { handleMisticRoutes } from "./mistic.routes";
+import { handleChatRoutes } from "./chat.routes";
 
 const ACCOUNT_SCOPED_HANDLERS = [
   handleBotRoutes,
@@ -22,6 +23,7 @@ const ACCOUNT_SCOPED_HANDLERS = [
   handleStickerRoutes,
   handleSettingsRoutes,
   handleMisticRoutes,
+  handleChatRoutes,
 ];
 
 /**

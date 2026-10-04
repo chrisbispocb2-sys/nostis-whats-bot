@@ -12,6 +12,7 @@ export async function handleBotRoutes(
       whatsappConnected: account.connection.connected,
       needsQr: account.connection.qr !== null,
       guard: account.guardStatus(),
+      away: { enabled: account.settings.get().awayMessageEnabled },
     });
   }
 

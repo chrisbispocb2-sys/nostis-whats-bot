@@ -30,6 +30,10 @@ export const PATHS = {
   accountsIndex: join(APPDATA_DIR, "accounts.json"),
   accounts: join(APPDATA_DIR, "accounts"),
   lockFile: join(TEMP_DIR, "bot.lock"),
+  users: join(APPDATA_DIR, "users.json"),
+  invites: join(APPDATA_DIR, "invites.json"),
+  sessions: join(APPDATA_DIR, "sessions.json"),
+  keys: join(APPDATA_DIR, "keys.json"),
 } as const;
 
 /**
@@ -56,6 +60,10 @@ export interface AccountPaths {
   mistic: string;
   misticCharges: string;
   qrCode: string;
+  chatDb: string;
+  chatMedia: string;
+  chatQuickReplies: string;
+  uberTrips: string;
 }
 
 export function accountPaths(
@@ -81,6 +89,10 @@ export function accountPaths(
     mistic: join(root, "mistic.json"),
     misticCharges: join(root, "mistic-charges.json"),
     qrCode: join(tempDir, isDefault ? "qr.png" : `qr-${id}.png`),
+    chatDb: join(root, "chat.db"),
+    chatMedia: join(root, "chat-media"),
+    chatQuickReplies: join(root, "chat-quick-replies.json"),
+    uberTrips: join(root, "uber-trips.json"),
   };
 }
 
@@ -95,4 +107,5 @@ export function ensureAccountDirectories(paths: AccountPaths): void {
   mkdirSync(paths.auth, { recursive: true });
   mkdirSync(paths.profiles, { recursive: true });
   mkdirSync(paths.stickerMedia, { recursive: true });
+  mkdirSync(paths.chatMedia, { recursive: true });
 }

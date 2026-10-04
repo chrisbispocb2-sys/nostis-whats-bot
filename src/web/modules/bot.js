@@ -11,6 +11,8 @@ const waSubEl = document.getElementById("wa-status-sub");
 const offlineBanner = document.getElementById("offline-banner");
 const guardBtn = document.getElementById("guard-btn");
 const guardLabelEl = document.getElementById("guard-label");
+const awayBtn = document.getElementById("away-btn");
+const awayLabelEl = document.getElementById("away-label");
 
 // Só avisa do desligamento por segurança se ele foi recente (o painel pode ter ficado fechado)
 const SHUTDOWN_NOTICE_WINDOW_MS = 15 * 60_000;
@@ -18,9 +20,11 @@ const SHUTDOWN_NOTICE_WINDOW_MS = 15 * 60_000;
 let botActive = null; // último estado conhecido do bot (da conta ativa)
 let waConnected = null; // último estado conhecido do WhatsApp (da conta ativa)
 let guard = null; // situação da segurança da conta ativa
+let away = null; // situação do recado automático da conta ativa
 let offline = false;
 let requestInFlight = false;
 let guardInFlight = false;
+let awayInFlight = false;
 const shutdownNoticed = new Map(); // conta → horário do último desligamento por segurança já avisado
 
 function activeAccount() {
@@ -62,7 +66,9 @@ function paintOffline() {
   waTitleEl.textContent = "Painel sem conexão";
   waSubEl.textContent = "Não foi possível falar com o bot";
   guard = null;
+  away = null;
   paintGuard();
+  paintAway();
 }
 
 /* ---------- Segurança: desliga o bot se ninguém responder no privado ---------- */
@@ -108,6 +114,35 @@ function paintGuard() {
   guardBtn.title = `Segurança ligada: se chegar uma mensagem no privado e ninguém responder em ${guard.minutes} min, o bot desliga sozinho. Clique para desligar a segurança.`;
 }
 
+/* ---------- Recado automático: avisa quem chamar no privado com o bot desligado ---------- */
+
+function paintAway() {
+  if (!away) {
+    awayBtn.disabled = true;
+    awayBtn.dataset.state = "off";
+    awayBtn.setAttribute("aria-pressed", "false");
+    awayLabelEl.textContent = "Recado";
+    awayBtn.title = "Carregando…";
+    return;
+  }
+
+  awayBtn.disabled = awayInFlight;
+  awayBtn.setAttribute("aria-pressed", String(away.enabled));
+
+  if (!away.enabled) {
+    awayBtn.dataset.state = "off";
+    awayLabelEl.textContent = "Recado";
+    awayBtn.title =
+      "Recado automático desligado. Clique para ligar: quem chamar no privado enquanto o bot estiver desligado recebe uma mensagem automática (e o bot é desligado agora, se estiver ligado).";
+    return;
+  }
+
+  awayBtn.dataset.state = "on";
+  awayLabelEl.textContent = "Recado · ligado";
+  awayBtn.title =
+    "Recado automático ligado: quem chamar no privado enquanto o bot estiver desligado recebe uma mensagem, uma vez, até o bot ligar de novo. Clique para desligar.";
+}
+
 function noticeAutoShutdown(accountId, lastShutdown) {
   if (!lastShutdown || shutdownNoticed.get(accountId) === lastShutdown.at) return;
   shutdownNoticed.set(accountId, lastShutdown.at);
@@ -126,6 +161,7 @@ export function resetBotStatus() {
   botActive = null;
   waConnected = null;
   guard = null;
+  away = null;
 
   statusEl.dataset.state = "checking";
   statusTextEl.textContent = "Carregando…";
@@ -135,12 +171,13 @@ export function resetBotStatus() {
   waTitleEl.textContent = account ? account.name : "Verificando conexão…";
   waSubEl.textContent = "Aguarde um instante";
   paintGuard();
+  paintAway();
 }
 
 export async function refreshStatus() {
   const accountId = state.activeAccountId;
   try {
-    const { active, whatsappConnected, needsQr, guard: guardStatus } = await api("/status");
+    const { active, whatsappConnected, needsQr, guard: guardStatus, away: awayStatus } = await api("/status");
 
     if (offline) {
       offline = false;
@@ -158,9 +195,11 @@ export async function refreshStatus() {
     botActive = active;
     waConnected = whatsappConnected;
     guard = guardStatus;
+    away = awayStatus;
     paintBot(active);
     paintWhatsApp(whatsappConnected, needsQr);
     paintGuard();
+    paintAway();
     noticeAutoShutdown(accountId, guardStatus.lastShutdown);
   } catch (err) {
     console.error("refreshStatus falhou:", err);
@@ -221,6 +260,39 @@ export function initBotControls() {
       refreshStatus();
     }
   });
+
+  awayBtn.addEventListener("click", async () => {
+    if (!away || awayInFlight) return;
+    const enabling = !away.enabled;
+    const willTurnOffBot = enabling && botActive === true;
+
+    awayInFlight = true;
+    paintAway();
+    try {
+      await api("/settings", { method: "PUT", body: { awayMessageEnabled: enabling } });
+      away = { ...away, enabled: enabling };
+
+      if (enabling) {
+        notify.success(
+          willTurnOffBot
+            ? "O bot foi desligado agora. Quem chamar no privado enquanto ele estiver desligado recebe a mensagem automática."
+            : "Quem chamar no privado enquanto o bot estiver desligado recebe a mensagem automática.",
+          { title: "Recado automático ligado" }
+        );
+      } else {
+        notify.info("O bot não manda mais a mensagem automática quando está desligado.", { title: "Recado automático desligado" });
+      }
+    } catch (err) {
+      notify.error(err.message, { title: "Não foi possível alterar o recado automático" });
+    } finally {
+      awayInFlight = false;
+      paintAway();
+      refreshStatus();
+    }
+  });
+
+  // As configurações mudaram o recado automático (pode ter desligado o bot): relê o estado agora
+  document.addEventListener("bot-settings-changed", refreshStatus);
 
   // A contagem regressiva anda sozinha entre uma leitura de status e outra
   setInterval(() => {

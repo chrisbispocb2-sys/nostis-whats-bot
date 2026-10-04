@@ -11,9 +11,14 @@ export interface PayWindowRect {
   height?: number;
 }
 
-/** Endereço do painel em "modo pagamento": só o modal da MisticPay, ocupando a janela. */
-export function payWindowUrl(port: number, accountId: string): string {
-  return `http://127.0.0.1:${port}/?pay=1&account=${encodeURIComponent(accountId)}`;
+/**
+ * Endereço do painel em "modo pagamento": só o modal da MisticPay, ocupando a janela. Com login
+ * ativo, `token` é o pay-token de curta duração que autoriza essa conta — o perfil de navegador
+ * isolado desta janela não carrega o cookie de sessão do painel principal.
+ */
+export function payWindowUrl(port: number, accountId: string, token?: string): string {
+  const base = `http://127.0.0.1:${port}/?pay=1&account=${encodeURIComponent(accountId)}`;
+  return token ? `${base}&token=${encodeURIComponent(token)}` : base;
 }
 
 /** Navegador baseado em Chromium instalado (Chrome, Edge ou Brave), que sabe abrir uma janela "de aplicativo" sem barra de endereço. */

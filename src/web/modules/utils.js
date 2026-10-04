@@ -88,6 +88,45 @@ export function formatCpf(value) {
   return digits.length === 11 ? digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4") : String(value || "");
 }
 
+// Link com endereço completo (http/https), "www.algo", ou um domínio solto com final conhecido
+// ("trip.uber.com/abc") — como o WhatsApp, que também transforma esses em link. O `(?<![\w@.])`
+// evita pegar o pedaço de um e-mail ("fulano@gmail.com") ou o meio de outra palavra.
+const LINK_PATTERN =
+  /(?<![\w@.\/])(?:https?:\/\/[^\s<>"]+|www\.[^\s<>"]+|(?:[a-z0-9-]+\.)+(?:com\.br|com|net|org|gov\.br|br|io|me|app|link|ly|gg|tv|co|info|dev|store|site|online|page|shop)(?![\w-])(?:[\/?#][^\s<>"]*)?)/gi;
+
+/** Pontuação que vem colada no fim do link mas faz parte da frase, não do endereço ("veja em site.com."). */
+function splitTrailingPunctuation(link) {
+  let end = link.length;
+  while (end > 0) {
+    const ch = link[end - 1];
+    if (".,;:!?'\"…".includes(ch)) end--;
+    // fecha-parêntese só sai se não tiver um abre-parêntese correspondente dentro do próprio link
+    else if (ch === ")" && !link.slice(0, end - 1).includes("(")) end--;
+    else break;
+  }
+  return [link.slice(0, end), link.slice(end)];
+}
+
+/**
+ * Texto de mensagem em HTML seguro, com os links clicáveis (abrem numa janela nova). Tudo é escapado:
+ * o endereço só vira `href` se for http/https (o que não tem "http" na frente ganha "https://"), então
+ * um texto malicioso não consegue virar `javascript:` nem injetar HTML.
+ */
+export function linkifyHtml(text) {
+  const source = String(text ?? "");
+  let html = "";
+  let last = 0;
+  for (const match of source.matchAll(LINK_PATTERN)) {
+    const [link, trailing] = splitTrailingPunctuation(match[0]);
+    if (!link) continue;
+    const href = /^https?:\/\//i.test(link) ? link : `https://${link}`;
+    html += escapeHtml(source.slice(last, match.index));
+    html += `<a class="chat-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(link)}</a>${escapeHtml(trailing)}`;
+    last = match.index + match[0].length;
+  }
+  return html + escapeHtml(source.slice(last));
+}
+
 /** Texto de mensagem do WhatsApp em HTML seguro: escapa tudo e mostra *negrito* como o app mostra. */
 export function whatsappHtml(text) {
   return escapeHtml(text).replace(/\*([^*\n]+)\*/g, "<strong>$1</strong>");
@@ -121,8 +160,8 @@ export function renderTemplate(template, values) {
     .trim();
 }
 
-/** Cor do avatar estável por nome (6 gradientes roxos/rosados definidos no CSS). */
-function avatarHue(text) {
+/** Cor estável por nome/JID (6 tons definidos no CSS) — usada no avatar e na cor do nome em grupos. */
+export function avatarHue(text) {
   let hash = 0;
   for (const ch of String(text)) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
   return hash % 6;

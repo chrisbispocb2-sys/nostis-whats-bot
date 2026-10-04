@@ -11,6 +11,7 @@ import { MisticService, normalizePhone, normalizePixKey, type MisticTiming } fro
 const CHAT = "5511977770000@s.whatsapp.net";
 const VALID_CPF = "52998224725";
 const OTHER_CPF = "12345678909";
+const WITHDRAW_PASSWORD = "senha-do-saque";
 
 const FAST: MisticTiming = {
   tickMs: 5,
@@ -106,7 +107,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "brinzy-mistic-"));
   store = new MisticStore(join(dir, "mistic.json"));
   charges = new ChargeStore(join(dir, "charges.json"));
-  store.update({ enabled: true, clientId: "ci_1", clientSecret: "cs_1", defaultPayerDocument: VALID_CPF });
+  store.update({ enabled: true, clientId: "ci_1", clientSecret: "cs_1", defaultPayerDocument: VALID_CPF, withdrawPassword: WITHDRAW_PASSWORD });
   outbox = [];
   failSending = false;
   operatorActions = [];
@@ -312,6 +313,39 @@ describe("identificar o pagamento e agradecer", () => {
     expect(outbox.length).toBe(1);
     expect(notifications.length).toBe(1);
     expect(onlyCalls("/transactions/check").length).toBe(2); // parou de consultar depois de pago
+  });
+
+  test("avisa onThanksSent só quando o agradecimento sai de verdade (não quando está desligado, nem se falhar o envio)", async () => {
+    const thanked: string[] = [];
+    const svc = newService({ onThanksSent: (chatJid) => thanked.push(chatJid) });
+    const charge = await svc.createCharge({ chatJid: CHAT, amount: 10 });
+    api.states[charge.misticId!] = "COMPLETO";
+    await svc.tick();
+    expect(thanked).toEqual([CHAT]);
+  });
+
+  test("agradecimento desligado não avisa onThanksSent (nenhuma mensagem saiu de verdade)", async () => {
+    store.update({ sendThanks: false });
+    const thanked: string[] = [];
+    const svc = newService({ onThanksSent: (chatJid) => thanked.push(chatJid) });
+    const charge = await svc.createCharge({ chatJid: CHAT, amount: 10 });
+    api.states[charge.misticId!] = "COMPLETO";
+    await svc.tick();
+    expect(thanked).toEqual([]);
+  });
+
+  test("falha ao enviar o agradecimento não avisa onThanksSent (só quando emplacar de verdade)", async () => {
+    const thanked: string[] = [];
+    failSending = true;
+    const svc = newService({ onThanksSent: (chatJid) => thanked.push(chatJid) });
+    const charge = await svc.createCharge({ chatJid: CHAT, amount: 10 });
+    api.states[charge.misticId!] = "COMPLETO";
+    await svc.tick();
+    expect(thanked).toEqual([]);
+
+    failSending = false;
+    await svc.tick();
+    expect(thanked).toEqual([CHAT]);
   });
 
   test("agradecimento personalizado", async () => {
@@ -522,7 +556,7 @@ describe("cuidado com a API da MisticPay", () => {
 });
 
 describe("saque", () => {
-  const base = { amount: 50, pixKeyType: "CPF", pixKey: "529.982.247-25", description: "Saque do mês" };
+  const base = { amount: 50, pixKeyType: "CPF", pixKey: "529.982.247-25", description: "Saque do mês", withdrawPassword: WITHDRAW_PASSWORD };
 
   test("pede o saque e guarda no histórico sem a chave completa", async () => {
     const record = await newService().withdraw(base);
@@ -576,6 +610,66 @@ describe("saque", () => {
   test("com a integração desligada não saca", async () => {
     store.update({ enabled: false });
     await expect(newService().withdraw(base)).rejects.toMatchObject({ code: "not_configured" });
+  });
+});
+
+describe("senha de saque", () => {
+  const base = { amount: 50, pixKeyType: "CPF", pixKey: "529.982.247-25", description: "Saque do mês", withdrawPassword: WITHDRAW_PASSWORD };
+
+  test("sem senha nenhuma criada: o saque fica bloqueado", async () => {
+    const dir2 = mkdtempSync(join(tmpdir(), "brinzy-mistic-"));
+    const store2 = new MisticStore(join(dir2, "mistic.json"));
+    store2.update({ enabled: true, clientId: "ci_1", clientSecret: "cs_1", defaultPayerDocument: VALID_CPF }); // sem withdrawPassword
+    try {
+      const svc = newService({ store: store2 });
+      await expect(svc.withdraw(base)).rejects.toThrow("Crie uma senha de saque");
+      expect(api.calls.length).toBe(0);
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  test("senha errada: recusa e não saca", async () => {
+    const svc = newService();
+    await expect(svc.withdraw({ ...base, withdrawPassword: "errada" })).rejects.toThrow("incorreta");
+    expect(api.calls.length).toBe(0);
+    expect(charges.list()).toEqual([]);
+  });
+
+  test("senha em branco também é recusada", async () => {
+    const svc = newService();
+    await expect(svc.withdraw({ ...base, withdrawPassword: "" })).rejects.toThrow("incorreta");
+    await expect(svc.withdraw({ ...base, withdrawPassword: undefined })).rejects.toThrow("incorreta");
+  });
+
+  test("senha certa: saca normalmente", async () => {
+    const svc = newService();
+    const record = await svc.withdraw(base);
+    expect(record.status).toBe("pending");
+  });
+
+  test("depois de errar, acertando funciona (não fica preso à primeira tentativa errada)", async () => {
+    const svc = newService();
+    await expect(svc.withdraw({ ...base, withdrawPassword: "errada" })).rejects.toThrow("incorreta");
+    const record = await svc.withdraw(base);
+    expect(record.status).toBe("pending");
+  });
+
+  test("muitas senhas erradas seguidas: trava temporariamente, mesmo com a senha certa", async () => {
+    const svc = newService();
+    for (let i = 0; i < 5; i++) {
+      await expect(svc.withdraw({ ...base, withdrawPassword: "errada" })).rejects.toThrow("incorreta");
+    }
+    await expect(svc.withdraw(base)).rejects.toThrow("Muitas tentativas");
+    expect(api.calls.length).toBe(0);
+  });
+
+  test("a senha nunca é mandada pra API da MisticPay", async () => {
+    const svc = newService();
+    await svc.withdraw(base);
+    for (const call of api.calls) {
+      expect(JSON.stringify(call.body ?? {})).not.toContain(WITHDRAW_PASSWORD);
+    }
   });
 });
 
@@ -728,7 +822,7 @@ describe("copiar a cobrança (sem enviar) e cliente aleatório", () => {
   test("chargeText de cobrança inexistente ou de saque é recusado", async () => {
     const svc = newService();
     expect(() => svc.chargeText("nao-existe")).toThrow("não encontrada");
-    const withdrawal = await svc.withdraw({ amount: 10, pixKeyType: "CPF", pixKey: VALID_CPF });
+    const withdrawal = await svc.withdraw({ amount: 10, pixKeyType: "CPF", pixKey: VALID_CPF, withdrawPassword: WITHDRAW_PASSWORD });
     expect(() => svc.chargeText(withdrawal.id)).toThrow("não encontrada");
   });
 });
@@ -832,7 +926,7 @@ describe("excluir cobrança", () => {
     const svc = newService();
     expect(() => svc.deleteCharge("nao-existe")).toThrow("não encontrada");
 
-    const withdrawal = await svc.withdraw({ amount: 10, pixKeyType: "CPF", pixKey: VALID_CPF });
+    const withdrawal = await svc.withdraw({ amount: 10, pixKeyType: "CPF", pixKey: VALID_CPF, withdrawPassword: WITHDRAW_PASSWORD });
     expect(() => svc.deleteCharge(withdrawal.id)).toThrow("não encontrada");
     expect(charges.get(withdrawal.id)).toBeDefined(); // o registro do saque continua
   });

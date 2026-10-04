@@ -3,6 +3,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   type WASocket,
   type WAMessage,
+  type WAMessageKey,
 } from "baileys-joss";
 import P from "pino";
 import QRCode from "qrcode";
@@ -41,6 +42,8 @@ export interface ConnectionOptions {
   openQrViewer: boolean;
   onMessage(sock: WASocket, msg: WAMessage): Promise<void>;
   onGroups(groups: GroupInfo[]): void;
+  /** O WhatsApp avisou que uma mensagem enviada mudou de status (entregue, lida...). */
+  onMessageUpdate?(key: WAMessageKey, status: number | null | undefined): void;
 }
 
 export type ConnectionFactory = (options: ConnectionOptions) => Connection;
@@ -181,6 +184,17 @@ export class WhatsAppConnection implements Connection {
             await this.options.onMessage(sock, msg);
           } catch (err) {
             logger.error({ err, account: this.options.label() }, "Erro ao processar mensagem");
+          }
+        }
+      });
+      sock.ev.on("messages.update", (updates) => {
+        if (generation !== this.generation) return;
+        for (const { key, update } of updates) {
+          if (update.status == null) continue;
+          try {
+            this.options.onMessageUpdate?.(key, update.status);
+          } catch (err) {
+            logger.error({ err, account: this.options.label() }, "Erro ao processar status de mensagem");
           }
         }
       });

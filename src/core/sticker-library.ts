@@ -11,19 +11,40 @@ export interface LibrarySticker {
   sourceGroupName: string;
   firstSeenAt: number;
   timesSeen: number;
+  /** Última vez que foi enviada de propósito pelo painel (não conta só "ter passado" num grupo). */
+  lastUsedAt: number | null;
 }
 
 export class StickerLibrary extends JsonFileStore<LibrarySticker[]> {
   constructor(file: string, private readonly mediaDir: string) {
     super(file, []);
+    // Figurinhas salvas antes de existir "usadas recentemente" não têm esse campo ainda.
+    for (const s of this.data) s.lastUsedAt ??= null;
   }
 
   list(): LibrarySticker[] {
     return [...this.data].sort((a, b) => b.firstSeenAt - a.firstSeenAt);
   }
 
+  /** Mais usadas recentemente primeiro (só as que já foram enviadas de propósito ao menos uma vez). */
+  listRecentlyUsed(limit = 16): LibrarySticker[] {
+    return this.data
+      .filter((s) => s.lastUsedAt !== null)
+      .sort((a, b) => b.lastUsedAt! - a.lastUsedAt!)
+      .slice(0, limit);
+  }
+
   get(id: string): LibrarySticker | undefined {
     return this.data.find((s) => s.id === id);
+  }
+
+  /** Marca que essa figurinha acabou de ser usada de propósito (enviada pelo painel). */
+  markUsed(id: string): boolean {
+    const sticker = this.get(id);
+    if (!sticker) return false;
+    sticker.lastUsedAt = Date.now();
+    this.save();
+    return true;
   }
 
   getMediaPath(sticker: LibrarySticker): string {
@@ -52,6 +73,7 @@ export class StickerLibrary extends JsonFileStore<LibrarySticker[]> {
       sourceGroupName: groupName,
       firstSeenAt: Date.now(),
       timesSeen: 1,
+      lastUsedAt: null,
     });
 
     if (this.data.length > CONFIG.maxStickers) {

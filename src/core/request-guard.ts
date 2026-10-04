@@ -12,8 +12,12 @@
  *    valem se vierem do próprio painel. Programas locais (curl, testes) não
  *    mandam esses cabeçalhos e continuam funcionando; navegadores sempre mandam.
  */
+function allowedHostsFor(port: number): string[] {
+  return [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`];
+}
+
 export function checkRequestOrigin(req: Request, port: number): Response | null {
-  const allowedHosts = [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`];
+  const allowedHosts = allowedHostsFor(port);
 
   const host = req.headers.get("host");
   if (host && !allowedHosts.includes(host.toLowerCase())) return forbidden("Endereço não permitido.");
@@ -39,4 +43,21 @@ export function checkRequestOrigin(req: Request, port: number): Response | null 
 
 function forbidden(error: string): Response {
   return Response.json({ error }, { status: 403 });
+}
+
+/**
+ * Pra conexões que ficam abertas recebendo dados (o WebSocket do chat em tempo
+ * real): ao contrário de uma leitura comum, aqui o Origin é exigido mesmo
+ * sendo um GET (o handshake de WebSocket do navegador sempre manda Origin,
+ * diferente de uma navegação/recurso comum) — sem isso, qualquer site aberto
+ * no mesmo navegador poderia escutar as conversas em tempo real.
+ */
+export function isPanelOrigin(req: Request, port: number): boolean {
+  const allowedHosts = allowedHostsFor(port);
+
+  const host = req.headers.get("host");
+  if (!host || !allowedHosts.includes(host.toLowerCase())) return false;
+
+  const origin = req.headers.get("origin");
+  return !!origin && allowedHosts.some((h) => origin.toLowerCase() === `http://${h}`);
 }

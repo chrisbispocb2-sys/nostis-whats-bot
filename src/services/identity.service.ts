@@ -48,6 +48,22 @@ export class IdentityService {
 
     return remoteJid;
   }
+
+  /**
+   * Resolve qualquer JID (de telefone ou LID) pro JID de telefone real, sem precisar de uma
+   * mensagem — usado quando já se tem o JID guardado (ex.: abrir os "dados do contato" bem depois
+   * de a mensagem ter chegado) e só falta mostrar o número de verdade pra quem usa o painel.
+   */
+  public async resolveJid(sock: WASocket, jid: string): Promise<string> {
+    if (!jid.endsWith("@lid")) return jid;
+    try {
+      const resolved = await sock.signalRepository.lidMapping.getPNForLID(jid);
+      if (resolved) return resolved;
+    } catch (err) {
+      console.error("Falha ao resolver LID pro número real:", err);
+    }
+    return jid;
+  }
 }
 
 export const identityService = new IdentityService();

@@ -47,6 +47,8 @@ const withdrawBalanceHint = document.getElementById("withdraw-balance-hint");
 const withdrawKeyTypeSelect = document.getElementById("withdraw-key-type");
 const withdrawKeyInput = document.getElementById("withdraw-key");
 const withdrawDescriptionInput = document.getElementById("withdraw-description");
+const withdrawPasswordInput = document.getElementById("withdraw-password");
+const withdrawPasswordHintEl = document.getElementById("withdraw-password-hint");
 
 const historyEl = document.getElementById("pay-history");
 const statementEl = document.getElementById("pay-statement");
@@ -180,6 +182,7 @@ export async function refreshPay() {
       renderHistory();
       updatePreview();
       updateDocumentHint();
+      updateWithdrawPasswordHint();
       if (Date.now() - infoAt >= INFO_REFRESH_MS) void loadAccountInfo({ silent: true });
     }
   } catch (err) {
@@ -329,6 +332,13 @@ function paintInfo() {
   withdrawBalanceHint.textContent = `Disponível para saque: ${formatCurrency(info.availableBalance)}`;
 
   if (info.withdrawBlocked) showAccountError("Os saques estão bloqueados nesta conta MisticPay. Fale com o suporte deles.");
+}
+
+/** Sem senha de saque criada ainda, o saque fica bloqueado — avisa antes de a pessoa preencher tudo à toa. */
+function updateWithdrawPasswordHint() {
+  withdrawPasswordHintEl.textContent = config?.hasWithdrawPassword
+    ? ""
+    : "Nenhuma senha de saque criada ainda: crie uma em Configurar MisticPay antes de sacar.";
 }
 
 function showAccountError(message) {
@@ -600,9 +610,11 @@ async function submitWithdraw() {
   const pixKeyType = withdrawKeyTypeSelect.value;
   const pixKey = withdrawKeyInput.value.trim();
   const description = withdrawDescriptionInput.value.trim();
+  const withdrawPassword = withdrawPasswordInput.value;
 
   if (!(amount > 0)) return flagInvalid(withdrawAmountInput, "Informe o valor do saque.");
   if (!pixKey) return flagInvalid(withdrawKeyInput, "Informe a chave PIX que vai receber.");
+  if (!withdrawPassword) return flagInvalid(withdrawPasswordInput, "Informe a senha de saque.");
 
   const confirmed = await confirmDialog({
     title: `Sacar ${formatBRL(amount)}?`,
@@ -614,7 +626,7 @@ async function submitWithdraw() {
 
   setBusy(submitBtn, true, "Sacando…");
   try {
-    await api("/mistic/withdraw", { method: "POST", body: { amount, pixKeyType, pixKey, description } });
+    await api("/mistic/withdraw", { method: "POST", body: { amount, pixKeyType, pixKey, description, withdrawPassword } });
     notify.success(`O saque de ${formatBRL(amount)} entrou na fila da MisticPay. Aviso quando for concluído.`, { title: "Saque pedido", duration: 7000 });
     withdrawAmountInput.value = "";
     withdrawKeyInput.value = "";
@@ -624,6 +636,7 @@ async function submitWithdraw() {
   } catch (err) {
     notify.error(err.message, { title: "Não foi possível sacar" });
   } finally {
+    withdrawPasswordInput.value = ""; // nunca deixa a senha sobrando na tela, tenha dado certo ou não
     setBusy(submitBtn, false);
     paintSubmit();
   }
@@ -885,6 +898,7 @@ export function openPayModal() {
   contactsHtml = ""; // ao abrir, escolhe de novo o cliente da conversa mais recente
   renderContacts();
   updateDocumentHint();
+  updateWithdrawPasswordHint();
   updatePreview();
   paintInfo();
   setTab("charge");

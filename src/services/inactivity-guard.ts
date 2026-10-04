@@ -9,6 +9,8 @@ export interface GuardDeps {
   isBotActive(): boolean;
   /** Desliga o bot: ninguém respondeu a `chatJid` a tempo. */
   shutdown(info: { chatJid: string; waitedMs: number }): void;
+  /** Por quanto tempo, depois de ser chamada num grupo, uma mensagem no privado dessa pessoa ainda conta. */
+  correlationWindowMs(): number;
 }
 
 /** Conversa privada em que o cliente escreveu e ainda ninguém respondeu. */
@@ -27,16 +29,52 @@ interface PendingChat {
 const CLOCK_SKEW_MS = 5_000;
 
 /**
- * Segurança: se o bot está ligado, chega uma mensagem no privado e ninguém
- * responde dentro do prazo, é sinal de que não tem ninguém atendendo — então o
- * bot desliga sozinho em vez de continuar chamando clientes que não serão
- * atendidos. Responder na conversa (pelo celular ou pelo computador) cancela
- * a contagem daquela conversa.
+ * Segurança: se o bot está ligado, chega uma mensagem no privado de alguém que
+ * foi chamado num grupo há pouco e ninguém responde dentro do prazo, é sinal
+ * de que não tem ninguém atendendo — então o bot desliga sozinho em vez de
+ * continuar chamando clientes que não serão atendidos. Responder na conversa
+ * (pelo celular ou pelo computador) cancela a contagem daquela conversa.
+ *
+ * Só a PRIMEIRA mensagem no privado depois de uma chamada no grupo conta: uma
+ * pessoa que já foi atendida (ou que nunca chamou num grupo) não reinicia a
+ * contagem escrevendo de novo — por exemplo, um "obrigado" no fim da conversa.
  */
 export class InactivityGuard {
   private pending = new Map<string, PendingChat>();
+  /** Quem foi chamado num grupo há pouco e ainda não escreveu no privado desde então (chave → horário). */
+  private groupCalls = new Map<string, number>();
 
   constructor(private readonly deps: GuardDeps) {}
+
+  /** Chamado quando um gatilho de grupo aponta pra essa pessoa: ela pode vir a escrever no privado a seguir. */
+  public registerGroupCall(jids: Array<string | null | undefined>): void {
+    const aliases = normalizeAll(jids.filter((jid): jid is string => !!jid));
+    if (aliases.length === 0) return;
+    this.pruneGroupCalls();
+    const now = Date.now();
+    for (const alias of aliases) this.groupCalls.set(alias, now);
+  }
+
+  /** Essa pessoa foi chamada num grupo há pouco (e ainda não tinha escrito no privado desde então)? Consome se sim. */
+  private consumeGroupCall(aliases: string[]): boolean {
+    const window = this.deps.correlationWindowMs();
+    const now = Date.now();
+    const called = aliases.some((alias) => {
+      const at = this.groupCalls.get(alias);
+      return at !== undefined && now - at <= window;
+    });
+    if (!called) return false;
+    for (const alias of aliases) this.groupCalls.delete(alias);
+    return true;
+  }
+
+  private pruneGroupCalls(): void {
+    const window = this.deps.correlationWindowMs();
+    const now = Date.now();
+    for (const [alias, at] of this.groupCalls) {
+      if (now - at > window) this.groupCalls.delete(alias);
+    }
+  }
 
   /** Quantas conversas estão esperando resposta. */
   get pendingCount(): number {
@@ -61,6 +99,9 @@ export class InactivityGuard {
 
     const aliases = normalizeAll(jids.concat(chatJid));
     if (aliases.length === 0 || this.find(aliases)) return;
+    // Só quem foi chamado num grupo há pouco entra na contagem — qualquer outra mensagem privada
+    // (de quem nunca chamou, ou que insiste depois de já ter sido atendida) é ignorada aqui
+    if (!this.consumeGroupCall(aliases)) return;
 
     const now = Date.now();
     const timeoutMs = this.deps.timeoutMs();

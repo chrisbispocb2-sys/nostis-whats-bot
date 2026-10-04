@@ -172,6 +172,89 @@ describe("pagamento confirmado → corrida nas métricas", () => {
   });
 });
 
+describe("chamada direta no privado (sem gatilho de grupo)", () => {
+  test("cria uma corrida sem grupo, já com o contato no privado marcado", () => {
+    const lead = store.recordPrivateCall({ jids: [PHONE_JID], phone: "5511977770000", callerName: "Zé" });
+
+    expect(lead).toMatchObject({ groupJid: "", groupName: "", ruleId: "", callerName: "Zé", status: "pending", value: null });
+    expect(lead.callerJid).toBe(PHONE_JID);
+    expect(lead.privateContactAt).toBe(lead.triggeredAt);
+    expect(store.list().map((l) => l.id)).toEqual([lead.id]);
+  });
+
+  test("insistindo (ainda pendente) não duplica: continua a mesma linha", () => {
+    const first = store.recordPrivateCall({ jids: [PHONE_JID], phone: "5511977770000", callerName: "Zé" });
+    const second = store.recordPrivateCall({ jids: [PHONE_JID], phone: "5511977770000", callerName: "Zé" });
+
+    expect(second.id).toBe(first.id);
+    expect(store.list().length).toBe(1);
+  });
+
+  test("depois de fechada (ou marcada como 'não fechou'), a próxima mensagem abre uma corrida nova", () => {
+    const first = store.recordPrivateCall({ jids: [PHONE_JID], phone: null, callerName: "Zé" });
+    store.update(first.id, { status: "closed" });
+
+    const second = store.recordPrivateCall({ jids: [PHONE_JID], phone: null, callerName: "Zé" });
+    expect(second.id).not.toBe(first.id);
+    expect(store.list().length).toBe(2);
+
+    store.update(second.id, { status: "not_closed" });
+    const third = store.recordPrivateCall({ jids: [PHONE_JID], phone: null, callerName: "Zé" });
+    expect(third.id).not.toBe(second.id);
+    expect(store.list().length).toBe(3);
+  });
+
+  test("depois de passar a janela de correlação, mesmo ainda pendente, abre uma corrida nova", () => {
+    const first = store.recordPrivateCall({ jids: [PHONE_JID], phone: null, callerName: "Zé" });
+    first.triggeredAt = Date.now() - 25 * HOUR; // além das 24h, mesmo "pending"
+
+    const second = store.recordPrivateCall({ jids: [PHONE_JID], phone: null, callerName: "Zé" });
+    expect(second.id).not.toBe(first.id);
+    expect(store.get(first.id)!.status).toBe("pending"); // a antiga continua lá, intocada
+  });
+
+  test("pessoas diferentes não se confundem", () => {
+    const a = store.recordPrivateCall({ jids: [PHONE_JID], phone: null, callerName: "Zé" });
+    const b = store.recordPrivateCall({ jids: ["5511900001111@s.whatsapp.net"], phone: null, callerName: "Ana" });
+    expect(a.id).not.toBe(b.id);
+    expect(store.list().length).toBe(2);
+  });
+
+  test("reconhece pelo telefone com o 9 extra a mais ou a menos", () => {
+    const first = store.recordPrivateCall({ jids: ["551177770000@s.whatsapp.net"], phone: null, callerName: "Zé" }); // sem o 9
+    const second = store.recordPrivateCall({ jids: [PHONE_JID], phone: "5511977770000", callerName: "Zé" });
+    expect(second.id).toBe(first.id);
+  });
+
+  test("reconhece pelo LID", () => {
+    const first = store.recordPrivateCall({ jids: [LID_JID], phone: null, callerName: "Zé" });
+    const second = store.recordPrivateCall({ jids: [PHONE_JID, LID_JID], phone: "5511977770000", callerName: "Zé" });
+    expect(second.id).toBe(first.id);
+  });
+
+  test("já tem uma corrida de GRUPO pendente pra essa pessoa: reaproveita, não cria uma direta separada", () => {
+    const grouped = trigger(PHONE_JID, 30 * 60_000);
+    const call = store.recordPrivateCall({ jids: [PHONE_JID], phone: "5511977770000", callerName: "Zé" });
+
+    expect(call.id).toBe(grouped.id);
+    expect(call.groupName).toBe("Grupo Centro"); // continua sendo a corrida do grupo, não virou "sem grupo"
+    expect(store.list().length).toBe(1);
+  });
+
+  test("fica salvo no disco", () => {
+    const lead = store.recordPrivateCall({ jids: [PHONE_JID], phone: null, callerName: "Zé" });
+    expect(new CallLeadStore(join(dir, "leads.json")).get(lead.id)).toMatchObject({ groupJid: "", callerName: "Zé" });
+  });
+
+  test("um pagamento da MisticPay fecha e preenche o valor, igual a uma corrida de grupo", () => {
+    const lead = store.recordPrivateCall({ jids: [PHONE_JID], phone: "5511977770000", callerName: "Zé" });
+    const applied = store.applyPayment(payment({ chargeCreatedAt: lead.triggeredAt + 1000 }));
+
+    expect(applied?.id).toBe(lead.id);
+    expect(store.get(lead.id)).toMatchObject({ status: "closed", value: 32.9, groupName: "" });
+  });
+});
+
 describe("resumo do recebido", () => {
   const paid = (amountCents: number, paidAt: number, kind: "charge" | "withdraw" = "charge", status: ChargeRecord["status"] = "paid"): ChargeRecord => {
     const r = newRecord({ id: String(Math.random()), kind, amountCents, description: "" });

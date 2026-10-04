@@ -74,6 +74,14 @@ export interface OverlayOptions {
   script?: string;
   /** Espera antes de reiniciar o botão se ele parar sozinho. */
   restartDelayMs?: number;
+  /**
+   * Com login ativo: existe alguém logado no painel agora? O botão é um processo local, não um
+   * navegador — não sabe quem está na frente da tela, então confere apenas se alguém, em algum
+   * lugar, está autenticado antes de abrir uma janela que pode gerar uma cobrança de verdade.
+   */
+  hasActiveSession?: () => boolean;
+  /** Emite o pay-token de curta duração que autoriza a janela de pagamento (perfil isolado, sem cookie). */
+  issuePayToken?: (accountId: string) => string;
 }
 
 export interface OverlayStatus {
@@ -199,8 +207,12 @@ export class Overlay {
   /** Abre a janela de pagamento (só o modal da MisticPay) da conta pedida, do tamanho e no lugar sugeridos. */
   openPayWindow(accountId: string, rect: PayWindowRect = {}): { url: string; browser: string | null } {
     if (!this.options.accounts().some((a) => a.id === accountId)) throw new Error("Conta não encontrada.");
+    if (this.options.hasActiveSession && !this.options.hasActiveSession()) {
+      throw new Error("Nenhuma sessão ativa: faça login no painel antes de usar o botão de cobrança.");
+    }
 
-    const url = payWindowUrl(this.options.port, accountId);
+    const token = this.options.issuePayToken?.(accountId);
+    const url = payWindowUrl(this.options.port, accountId, token);
     const browser = this.findBrowser();
     const command = browser
       ? buildPayWindowCommand(browser, url, payWindowProfileDir(this.options.tempDir), rect)

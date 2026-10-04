@@ -1,4 +1,7 @@
 export const state = {
+  // Login: quem está usando o painel agora (preenchido por guardAuth())
+  currentUser: null,
+
   // Contas de WhatsApp (o resto do estado abaixo é sempre da conta ativa)
   accounts: [],
   activeAccountId: null,

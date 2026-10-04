@@ -115,9 +115,11 @@ function rowHtml(l, bannedSet, callerCountByJid) {
     ? `<span class="badge badge-success lead-paid" title="Pagamento confirmado pela MisticPay${l.paidAt ? ` em ${formatDateTime(l.paidAt)}` : ""}">${icon("check")} Pago · MisticPay</span>`
     : "";
 
+  const group = l.groupName ? escapeHtml(l.groupName) : '<span class="chip-muted">Direto no privado</span>';
+
   return `
   <tr data-id="${l.id}">
-    <td class="wrap">${escapeHtml(l.groupName)}</td>
+    <td class="wrap">${group}</td>
     <td>${person}</td>
     <td>${formatDateTime(l.triggeredAt)}</td>
     <td>${privateContact}</td>

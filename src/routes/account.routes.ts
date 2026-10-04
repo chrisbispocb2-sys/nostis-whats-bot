@@ -15,6 +15,7 @@ function describe(account: Account) {
     needsQr: account.connection.qr !== null,
     guardEnabled: guard.enabled,
     guardPending: guard.pending,
+    unreadChats: account.chats.countUnreadChats(),
   };
 }
 
