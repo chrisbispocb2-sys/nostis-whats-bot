@@ -1,4 +1,3 @@
-import { randomBytes } from "crypto";
 import {
   UserStore,
   AuthError,
@@ -15,44 +14,17 @@ import { InviteStore, type Invite } from "./invite-store";
 import { SessionStore } from "./session-store";
 import { KeyStore, type AccessKey } from "./key-store";
 import { CONFIG } from "../config";
+import { PayTokenRegistry, readSessionCookie as readCookie, sessionCookieHeader, SESSION_COOKIE_NAME, type AuthProvider, type AuthResult } from "./auth-provider";
 
-export const SESSION_COOKIE_NAME = "brinzy_session";
-
-export interface AuthResult {
-  user: PublicUser;
-  cookie: string;
-}
-
-interface PayToken {
-  accountId: string;
-  expiresAt: number;
-}
-
-function readCookie(req: Request): string | null {
-  const header = req.headers.get("cookie");
-  if (!header) return null;
-  return new Bun.CookieMap(header).get(SESSION_COOKIE_NAME);
-}
-
-function sessionCookieHeader(rawToken: string, maxAgeSeconds: number): string {
-  return new Bun.Cookie(SESSION_COOKIE_NAME, rawToken, {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    // O painel é servido em http://127.0.0.1 (texto puro): "Secure" faria o navegador nunca mandar
-    // o cookie de volta, derrubando o login inteiro.
-    secure: false,
-    maxAge: maxAgeSeconds,
-  }).serialize();
-}
+export { SESSION_COOKIE_NAME, type AuthResult };
 
 /**
- * Cola entre `UserStore`/`InviteStore`/`SessionStore` e o HTTP: login, registro por convite,
- * sessão via cookie e os pay-tokens de curta duração usados pela janela de pagamento (ver o
- * plano de login — ela tem perfil de navegador isolado e não carrega o cookie do painel).
+ * Login em "modo local": as contas ficam guardadas neste computador (`UserStore`/`InviteStore`/
+ * `SessionStore`). Serve pra desenvolver e testar — o exe usa `RemoteAuthService`, em que quem
+ * manda é o servidor de licenças. Também cuida dos pay-tokens da janela de pagamento.
  */
-export class AuthService {
-  private readonly payTokens = new Map<string, PayToken>();
+export class AuthService implements AuthProvider {
+  private readonly payTokens = new PayTokenRegistry();
 
   constructor(
     private readonly users: UserStore,
@@ -114,29 +86,12 @@ export class AuthService {
 
   /** Token de vida curta para a janela de pagamento (perfil de navegador isolado, sem cookie do painel). */
   issuePayToken(accountId: string): string {
-    const now = Date.now();
-    for (const [key, entry] of this.payTokens) if (entry.expiresAt <= now) this.payTokens.delete(key);
-
-    const token = randomBytes(32).toString("hex");
-    this.payTokens.set(token, { accountId, expiresAt: now + CONFIG.payTokenTtlMs });
-    return token;
-  }
-
-  private payTokenAuthorizes(req: Request, url: URL): boolean {
-    const match = url.pathname.match(/^\/accounts\/([^/]+)\//);
-    if (!match) return false;
-    const accountId = decodeURIComponent(match[1]!);
-
-    const token = req.headers.get("x-pay-token") || url.searchParams.get("token");
-    if (!token) return false;
-
-    const entry = this.payTokens.get(token);
-    return !!entry && entry.expiresAt > Date.now() && entry.accountId === accountId;
+    return this.payTokens.issue(accountId);
   }
 
   /** Autoriza uma rota de conta: sessão de cookie normal, ou um pay-token válido para aquela conta. */
   isAuthorizedForAccount(req: Request, url: URL): boolean {
-    return !!this.currentUser(req) || this.payTokenAuthorizes(req, url);
+    return !!this.currentUser(req) || this.payTokens.authorizes(req, url);
   }
 
   /* ---------- Administração (convites e usuários) ---------- */

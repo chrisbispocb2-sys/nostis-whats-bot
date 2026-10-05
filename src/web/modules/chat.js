@@ -78,6 +78,7 @@ const chatReactionPickerEl = document.getElementById("chat-reaction-picker");
 const chatLightboxEl = document.getElementById("chat-lightbox");
 const chatLightboxImg = document.getElementById("chat-lightbox-img");
 const chatLightboxClose = document.getElementById("chat-lightbox-close");
+const chatLightboxDownload = document.getElementById("chat-lightbox-download");
 const forwardModal = document.getElementById("forward-modal");
 const forwardSearchInput = document.getElementById("forward-search");
 const forwardListEl = document.getElementById("forward-list");
@@ -185,7 +186,7 @@ let forwardSource = null;
 const SOUND_MAX_MESSAGE_AGE_MS = 2 * 60_000;
 const SOUND_MIN_GAP_MS = 1200; // várias mensagens de uma vez tocam um bip só, não uma rajada
 const SOUNDED_IDS_LIMIT = 500;
-let notificationSoundEnabled = true;
+const soundSockets = new Map(); // conta que NÃO está aberta na tela → socket só pra ouvir as mensagens dela
 let audioCtx = null;
 let lastSoundAt = 0;
 const soundedMessageIds = new Set(); // mensagens que já tocaram (a mesma nunca toca duas vezes)
@@ -217,13 +218,13 @@ export function resetChat() {
   closeThread();
   closeRealtime();
   connectRealtime();
+  syncSoundSockets();
   quickReplySettings = { enabled: false, chipsSendOnClick: false, replyVariantAlsoSends: false, variants: [], chips: [] };
   variantBag = [];
   renderQuickReplyBar();
   loadQuickReplySettings();
   misticConfigured = false;
   loadMisticStatus();
-  loadNotificationSoundSetting();
 }
 
 function mediaUrl(m) {
@@ -905,7 +906,8 @@ function messageBodyHtml(m) {
       m.type === "audio" ? "Áudio" :
       m.type === "document" ? m.mediaFileName || "Documento" :
       m.type === "sticker" ? "Figurinha" :
-      "Mensagem não suportada por aqui ainda";
+      // O servidor guarda qual era o tipo (em `text`): ajuda a saber o que falta tratar
+      `Mensagem não suportada por aqui ainda${m.text ? ` (tipo: ${m.text})` : ""}`;
     const downloadable = ["image", "video", "audio", "document", "sticker"].includes(m.type);
     if (downloadable && m.mediaDownloadFailed) {
       return `<span class="chat-bubble-media chat-bubble-media-failed">
@@ -918,7 +920,12 @@ function messageBodyHtml(m) {
   }
 
   const url = mediaUrl(m);
-  if (m.type === "image") return `<img class="chat-bubble-image" src="${url}" alt="">${caption}`;
+  if (m.type === "image") {
+    return `<span class="chat-bubble-image-wrap">
+        <img class="chat-bubble-image" src="${url}" alt="">
+        <button type="button" class="chat-bubble-download-btn" data-action="download-media" title="Baixar imagem" aria-label="Baixar imagem">${icon("download")}</button>
+      </span>${caption}`;
+  }
   if (m.type === "sticker") return `<img class="chat-bubble-sticker" src="${url}" alt="">`;
   if (m.type === "video") return `<video class="chat-bubble-video" controls src="${url}"></video>${caption}`;
   if (m.type === "audio") return `<audio class="chat-bubble-audio" controls src="${url}"></audio>`;
@@ -1237,8 +1244,11 @@ bindModal(forwardModal, () => closeModal(forwardModal));
 
 /* ---------- Visualizador de foto ---------- */
 
-function openLightbox(url) {
+/** `downloadName`: nome do arquivo ao clicar em "Baixar" (foto de mensagem leva o nome dela; avatar etc. fica "imagem"). */
+function openLightbox(url, downloadName = "imagem") {
   chatLightboxImg.src = url;
+  chatLightboxDownload.href = url;
+  chatLightboxDownload.download = downloadName;
   chatLightboxEl.classList.remove("hidden");
 }
 
@@ -1340,9 +1350,9 @@ chatSearchNext.addEventListener("click", () => goToSearchResult(1));
 
 /* ---------- Tempo real (WebSocket) ---------- */
 
-function wsUrl() {
+function wsUrl(accountId = state.activeAccountId) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${location.host}${accountUrl("/chats/socket")}`;
+  return `${proto}//${location.host}${accountUrl("/chats/socket", accountId)}`;
 }
 
 /**
@@ -1350,14 +1360,17 @@ function wsUrl() {
  * carrega atualizações de mensagens antigas (mídia que terminou de baixar ou falhou, a varredura
  * que tenta baixar mídia de novo de tempos em tempos, mensagem apagada, reentrega do WhatsApp) —
  * tocar nelas era o "barulho de mensagem sem mensagem nenhuma ter chegado".
+ *
+ * `sound` vem do servidor, mensagem a mensagem: é a configuração de som do WhatsApp que recebeu a
+ * mensagem (e a conversa não estar arquivada). Antes o painel usava a configuração da conta aberta
+ * na tela, que podia não ser a da conta que recebeu.
  */
-function shouldPlaySoundFor(message, isNew) {
-  if (!isNew || message.fromMe) return false;
+function shouldPlaySoundFor(message, isNew, sound) {
+  if (!sound || !isNew || message.fromMe) return false;
   if (message.type === "reaction" || message.type === "revoked" || message.type === "system") return false;
   // Histórico entregue depois de reconectar: mensagem velha, não é "chegou agora"
   if (Date.now() - message.timestamp > SOUND_MAX_MESSAGE_AGE_MS) return false;
-  // Conversa arquivada não aparece na lista: o som viria sem nada novo na tela
-  if (archivedChats.some((c) => c.jid === message.chatJid)) return false;
+  // A mesma mensagem de grupo chega em cada WhatsApp seu que está no grupo: um bip só
   if (soundedMessageIds.has(message.id)) return false;
 
   soundedMessageIds.add(message.id);
@@ -1365,9 +1378,49 @@ function shouldPlaySoundFor(message, isNew) {
   return true;
 }
 
+/**
+ * Os outros WhatsApp (os que não estão abertos na tela) também tocam som quando chega mensagem, cada
+ * um conforme a configuração dele: um socket por conta, só pra ouvir. Chamado ao trocar de conta e de
+ * tempos em tempos (conta nova, conta removida, socket que caiu).
+ */
+function syncSoundSockets() {
+  const wanted = new Set(state.accounts.map((a) => a.id).filter((id) => id !== state.activeAccountId));
+
+  for (const [id, socket] of soundSockets) {
+    if (wanted.has(id)) continue;
+    soundSockets.delete(id);
+    socket.close();
+  }
+
+  for (const id of wanted) {
+    if (soundSockets.has(id)) continue;
+    let socket;
+    try {
+      socket = new WebSocket(wsUrl(id));
+    } catch {
+      continue;
+    }
+    soundSockets.set(id, socket);
+    socket.addEventListener("message", (e) => {
+      if (soundSockets.get(id) !== socket) return; // conta que virou a da tela (ou saiu): o socket principal cuida
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === "chat-message" && shouldPlaySoundFor(data.message, data.isNew === true, data.sound === true)) playNotificationSound();
+      } catch {
+        // mensagem que não era pra gente entender: ignora
+      }
+    });
+    const drop = () => {
+      if (soundSockets.get(id) === socket) soundSockets.delete(id); // a próxima sincronização abre de novo
+    };
+    socket.addEventListener("close", drop);
+    socket.addEventListener("error", drop);
+  }
+}
+
 /** Mensagem nova, enviada, ou que acabou de ganhar mídia: atualiza a conversa aberta na hora. */
-function handleRealtimeMessage(message, isNew) {
-  if (shouldPlaySoundFor(message, isNew)) playNotificationSound();
+function handleRealtimeMessage(message, isNew, sound) {
+  if (shouldPlaySoundFor(message, isNew, sound)) playNotificationSound();
 
   if (message.chatJid === activeChatJid) {
     if (message.type === "reaction") {
@@ -1402,8 +1455,9 @@ function connectRealtime() {
   wsSocketAccountId = state.activeAccountId;
   clearTimeout(wsReconnectTimer);
 
+  let socket;
   try {
-    ws = new WebSocket(wsUrl());
+    socket = ws = new WebSocket(wsUrl());
   } catch {
     scheduleReconnect();
     return;
@@ -1415,9 +1469,12 @@ function connectRealtime() {
   });
 
   ws.addEventListener("message", (e) => {
+    // Socket da conta anterior ainda fechando depois de uma troca de conta: o que chegar por ele
+    // não é desta tela
+    if (ws !== socket) return;
     try {
       const data = JSON.parse(e.data);
-      if (data.type === "chat-message") handleRealtimeMessage(data.message, data.isNew === true);
+      if (data.type === "chat-message") handleRealtimeMessage(data.message, data.isNew === true, data.sound === true);
       else if (data.type === "chat-message-deleted") handleRealtimeDeleted(data.chatJid, data.id);
     } catch {
       // mensagem que não era pra gente entender: ignora
@@ -1456,6 +1513,7 @@ function closeRealtime() {
 function schedulePoll() {
   clearTimeout(pollTimer);
   pollTimer = setTimeout(async () => {
+    syncSoundSockets();
     if (!document.hidden) await refreshChat();
     schedulePoll();
   }, wsConnected ? POLL_MS_WITH_SOCKET : POLL_MS_NO_SOCKET);
@@ -1632,20 +1690,62 @@ function hideRideBar() {
   chatRideBarEl.classList.add("hidden");
 }
 
-/** Corridas em andamento de todas as conversas da conta, acima da lista (clicar abre a conversa). */
+/**
+ * Em que pé está a corrida, pra cor da bolinha e a ordem na barra: "waiting" = ainda não embarcou,
+ * "unpaid" = embarcou mas ainda não pagou, "paid" = embarcou e já pagou (só falta a corrida terminar).
+ */
+function rideStage(trip) {
+  if (trip.phase !== "in_progress" && trip.phase !== "finished") return "waiting";
+  return trip.paid ? "paid" : "unpaid";
+}
+
+const RIDE_STAGE_ORDER = { waiting: 0, unpaid: 1, paid: 2 };
+
+/** O que cabe na bolinha da corrida com a barra recolhida: minutos até o motorista chegar, alfinete se já chegou, "R$" se falta pagar, check se pagou. */
+function rideChipHtml(trip) {
+  const stage = rideStage(trip);
+  if (stage === "paid") return icon("check");
+  if (stage === "unpaid") return "R$";
+  if (trip.phase === "arrived_pickup") return icon("pin");
+  if (trip.phase === "near_pickup_1min") return "1m";
+  if (trip.phase === "near_pickup") return "2m";
+  return trip.etaSeconds != null ? `${Math.max(1, Math.ceil(trip.etaSeconds / 60))}m` : icon("car");
+}
+
+/**
+ * Corridas em acompanhamento de todas as conversas da conta, numa barra estreita à esquerda da lista:
+ * só uma bolinha por corrida, que abre mostrando cliente, situação e valor ao passar o mouse (clicar
+ * abre a conversa). A corrida fica até terminar de vez, mudando de cor e descendo conforme avança.
+ */
 function renderRidesList() {
   const html = activeRides.length
-    ? `<div class="chat-rides-head"><span aria-hidden="true">🚗</span> Corridas em andamento <span class="chat-nav-count">${activeRides.length}</span></div>` +
-      activeRides
-        .map((trip) => {
-          const who = (trip.phone ? formatPhone(trip.phone) : null) || trip.name || phoneFromJid(trip.chatJid) || trip.chatJid;
-          const amount = trip.agreedAmountCents != null ? formatBRL(trip.agreedAmountCents / 100) : "sem valor";
-          return `<button type="button" class="chat-ride-row ${trip.chatJid === activeChatJid ? "is-active" : ""}" data-ride-jid="${escapeHtml(trip.chatJid)}">
-            <span class="chat-ride-row-name">${escapeHtml(who)}</span>
-            <span class="chat-ride-row-status">${escapeHtml(`${rideTitle(trip)} · ${amount}`)}</span>
-          </button>`;
-        })
-        .join("")
+    ? `<div class="chat-rides-panel">
+        <div class="chat-rides-head"><span class="chat-ride-chip">${icon("car")}</span><span class="chat-rides-head-label">Corridas</span><span class="chat-nav-count">${activeRides.length}</span></div>
+        <div class="chat-rides-items">${activeRides
+          .map((trip) => {
+            const who = (trip.phone ? formatPhone(trip.phone) : null) || trip.name || phoneFromJid(trip.chatJid) || trip.chatJid;
+            const amount = trip.agreedAmountCents != null ? formatBRL(trip.agreedAmountCents / 100) : "sem valor";
+            const status = `${rideTitle(trip)} · ${amount} · ${trip.paid ? "pago" : "não pago"}`;
+            // Clicar na corrida abre a página dela na Uber (mapa e situação ao vivo); o botão ao lado abre a conversa
+            const link = `https://trip.uber.com/${encodeURIComponent(trip.shareToken || "")}`;
+            return `<div class="chat-ride-item">
+            <a class="chat-ride-row ${trip.chatJid === activeChatJid ? "is-active" : ""} ${trip.paid ? "is-paid" : ""}" href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer" data-stage="${rideStage(trip)}" title="Abrir a corrida na Uber" aria-label="${escapeHtml(`${who} — ${status} — abrir a corrida na Uber`)}">
+              <span class="chat-ride-chip">${rideChipHtml(trip)}</span>
+              <span class="chat-ride-row-text">
+                <span class="chat-ride-row-name">${escapeHtml(who)}</span>
+                <span class="chat-ride-row-status">${escapeHtml(status)}</span>
+              </span>
+            </a>
+            <button type="button" class="icon-btn chat-ride-chat-btn" data-ride-jid="${escapeHtml(trip.chatJid)}" title="Abrir a conversa" aria-label="${escapeHtml(`Abrir a conversa com ${who}`)}">${icon("message")}</button>
+            </div>`;
+          })
+          .join("")}</div>
+        <div class="chat-rides-legend" aria-hidden="true">
+          <span data-stage="waiting">Ainda não embarcou</span>
+          <span data-stage="unpaid">Embarcou, falta pagar</span>
+          <span data-stage="paid">Pago, corrida em andamento</span>
+        </div>
+      </div>`
     : "";
   if (html === ridesListHtml) return;
   ridesListHtml = html;
@@ -1655,7 +1755,13 @@ function renderRidesList() {
 
 async function refreshRidesList() {
   try {
-    ({ trips: activeRides } = await api("/chats/uber-trips"));
+    const { trips } = await api("/chats/uber-trips");
+    // Quem ainda não embarcou fica em cima; depois quem embarcou e falta pagar; por último quem já pagou.
+    // Dentro de cada grupo, a corrida mais antiga primeiro (a ordem em que o servidor manda).
+    activeRides = trips
+      .map((trip, index) => ({ trip, index }))
+      .sort((a, b) => RIDE_STAGE_ORDER[rideStage(a.trip)] - RIDE_STAGE_ORDER[rideStage(b.trip)] || a.index - b.index)
+      .map(({ trip }) => trip);
   } catch {
     activeRides = []; // assistente não liberado pra este usuário, ou leitura falhou
   }
@@ -2321,18 +2427,8 @@ async function loadMisticStatus() {
   }
 }
 
-async function loadNotificationSoundSetting() {
-  try {
-    const settings = await api("/settings");
-    notificationSoundEnabled = settings.notificationSoundEnabled !== false;
-  } catch (err) {
-    console.error("loadNotificationSoundSetting falhou:", err);
-  }
-}
-
-/** Bip curto (duas notas) tocado quando chega mensagem de alguém, se a configuração estiver ligada. */
+/** Bip curto (duas notas) tocado quando chega mensagem de alguém (quem decide se toca é `shouldPlaySoundFor`). */
 function playNotificationSound() {
-  if (!notificationSoundEnabled) return;
   if (Date.now() - lastSoundAt < SOUND_MIN_GAP_MS) return;
   lastSoundAt = Date.now();
   try {
@@ -2567,8 +2663,18 @@ export function initChat() {
 
     if (e.target.closest(".chat-join-request")) return void openJoinRequestsForActiveGroup();
 
+    if (e.target.closest('[data-action="download-media"]')) {
+      const id = e.target.closest(".chat-bubble-row")?.dataset.id;
+      const message = messages.find((m) => m.id === id);
+      if (message) downloadMessageMedia(message);
+      return;
+    }
+
     const img = e.target.closest(".chat-bubble-image");
-    if (img) return openLightbox(img.src);
+    if (img) {
+      const message = messages.find((m) => m.id === img.closest(".chat-bubble-row")?.dataset.id);
+      return openLightbox(img.src, message ? message.mediaFileName || `imagem-${message.id}` : undefined);
+    }
 
     const senderEl = e.target.closest(".chat-bubble-sender");
     if (senderEl) {
@@ -2651,9 +2757,6 @@ export function initChat() {
   });
 
   document.addEventListener("mistic-config-changed", loadMisticStatus);
-  document.addEventListener("notification-sound-changed", (e) => {
-    notificationSoundEnabled = !!e.detail?.enabled;
-  });
 
   chatQuickReplySettingsBtn.addEventListener("click", openQuickReplySettingsModal);
   qrSaveBtn.addEventListener("click", saveQuickReplySettings);

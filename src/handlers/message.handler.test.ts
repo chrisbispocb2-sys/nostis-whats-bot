@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { WAMessageStubType, type WAMessage as StubMessage } from "baileys-joss";
 import { Account } from "../core/account";
 import { DEFAULT_GREETING_MESSAGE } from "../core/keyword-store";
 import {
@@ -573,6 +574,75 @@ describe("histórico de chat: tudo que acontece numa conversa fica salvo", () =>
     await connection.deliver(groupText(GROUP, CLIENT, "bom dia pessoal"));
 
     expect(account.chats.listMessages(GROUP)).toMatchObject([{ text: "bom dia pessoal", fromMe: false }]);
+  });
+
+  test("marcação em grupo (@número interno): vira o nome de quem foi marcado, ou o telefone se o nome não é conhecido", async () => {
+    const OTHER = "5511966660000@s.whatsapp.net";
+    account.bot.setGroups([{ jid: GROUP, name: "Grupo Teste", hasPicture: false }]);
+    connection.connected = true;
+    connection.sock.lidToPhone[CLIENT_LID] = CLIENT;
+    connection.sock.lidToPhone["111222333444@lid"] = "5521988887777@s.whatsapp.net";
+
+    await connection.deliver(groupText(GROUP, CLIENT, "bom dia", { pushName: "Maria" }));
+    await connection.deliver(groupText(GROUP, OTHER, "bora @987654321 ?"));
+    await connection.deliver(groupText(GROUP, OTHER, "e você @111222333444, e @555666777888?"));
+
+    const texts = account.chats.listMessages(GROUP).map((m) => m.text);
+    expect(texts).toContain("bora @~Maria ?");
+    // sem nome conhecido: o telefone de verdade; sem conseguir descobrir de quem é: fica como veio
+    expect(texts).toContain("e você @+55 21 98888-7777, e @555666777888?");
+  });
+
+  test("marcação gravada antes (só o número): é trocada pelo nome na hora de mostrar a conversa", async () => {
+    account.bot.setGroups([{ jid: GROUP, name: "Grupo Teste", hasPicture: false }]);
+    connection.sock.lidToPhone[CLIENT_LID] = CLIENT;
+
+    // WhatsApp desconectado na hora: não dá pra descobrir de quem é a marcação, grava como veio
+    await connection.deliver(groupText(GROUP, CLIENT, "bom dia", { pushName: "Maria" }));
+    await connection.deliver(groupText(GROUP, "5511966660000@s.whatsapp.net", "bora @987654321 ?"));
+    expect(account.chats.listMessages(GROUP).map((m) => m.text)).toContain("bora @987654321 ?");
+
+    connection.connected = true;
+    expect((await account.chats.listMessagesWithMentions(GROUP)).map((m) => m.text)).toContain("bora @~Maria ?");
+  });
+
+  test("aviso de remoção em que quem removeu vem só pelo número interno (LID): mostra o nome (ou o telefone) em vez de 'Alguém'", async () => {
+    const ADMIN_LID = "150170008293498@lid";
+    const ADMIN = "5538991539584@s.whatsapp.net";
+    account.bot.setGroups([{ jid: GROUP, name: "Grupo Teste", hasPicture: false }]);
+    connection.connected = true;
+    connection.sock.lidToPhone[ADMIN_LID] = ADMIN;
+    connection.sock.lidToPhone[CLIENT_LID] = CLIENT;
+
+    const removal = () =>
+      ({
+        key: { remoteJid: GROUP, fromMe: false, id: `STUB${Math.random()}`, participant: ADMIN_LID },
+        messageStubType: WAMessageStubType.GROUP_PARTICIPANT_REMOVE,
+        messageStubParameters: [JSON.stringify({ id: CLIENT_LID })],
+      }) as unknown as StubMessage;
+
+    // ninguém escreveu ainda: sem nome, vale o telefone de verdade dos dois
+    await connection.deliver(removal());
+    expect(account.chats.listMessages(GROUP)[0]!.text).toBe("+55 38 99153-9584 removeu +55 11 97777-0000");
+
+    // depois que escreveram no grupo, o nome do WhatsApp de cada um
+    await connection.deliver(groupText(GROUP, ADMIN, "regras do grupo", { pushName: "ADM Ozy" }));
+    await connection.deliver(groupText(GROUP, CLIENT, "oi", { pushName: "Maria" }));
+    await connection.deliver(removal());
+    expect(account.chats.listMessages(GROUP)[0]!.text).toBe("~ADM Ozy removeu ~Maria");
+  });
+
+  test("som de mensagem nova: segue a configuração desta conta, e conversa arquivada não toca", async () => {
+    await connection.deliver(privateText(CLIENT, "oi"));
+    expect(account.playsSoundFor(CLIENT)).toBe(true);
+
+    account.chats.setArchived(CLIENT, true);
+    expect(account.playsSoundFor(CLIENT)).toBe(false);
+    account.chats.setArchived(CLIENT, false);
+
+    account.settings.update({ notificationSoundEnabled: false });
+    expect(account.playsSoundFor(CLIENT)).toBe(false);
+    expect(account.playsSoundFor("5511900000000@s.whatsapp.net")).toBe(false);
   });
 
   test("mensagem de grupo é gravada mesmo com o grupo desabilitado", async () => {

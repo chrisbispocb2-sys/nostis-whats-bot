@@ -7,6 +7,10 @@ src/core/data/
 data/
 qr.png
 
+# Servidor de licenças: chave privada e dados dos clientes nunca vão pro repositório
+.env
+servidor/data/
+
 # Build
 *.exe
 dist/

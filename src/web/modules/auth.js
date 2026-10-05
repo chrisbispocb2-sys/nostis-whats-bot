@@ -124,6 +124,7 @@ export async function guardAuth() {
 
   if (status.authenticated) {
     state.currentUser = status.user;
+    warnAboutLicense(status.license);
     return { blocked: false };
   }
 
@@ -133,6 +134,49 @@ export async function guardAuth() {
   else renderGate("login");
 
   return { blocked: true };
+}
+
+/* ---------- Licença (só com servidor de licenças): avisa quando o programa está sem falar com ele ---------- */
+
+let lastLicenseState = "ok";
+
+/** Avisa uma vez a cada mudança: sem falar com o servidor (ainda funcionando) ou já bloqueado por isso. */
+function warnAboutLicense(license) {
+  const licenseState = license?.state ?? "ok";
+  if (licenseState === lastLicenseState) return;
+  lastLicenseState = licenseState;
+  if (licenseState === "offline") {
+    notify.warning(`Sem conexão com o servidor de licenças. O programa continua funcionando até ${formatDateTime(license.validUntil)}; depois disso é preciso estar online.`, {
+      title: "Licença sem renovar",
+      duration: 15000,
+    });
+  } else if (licenseState === "blocked") {
+    notify.error("O programa ficou tempo demais sem conseguir falar com o servidor de licenças. Confira sua internet: as funcionalidades voltam assim que a licença for renovada.", {
+      title: "Licença bloqueada",
+      duration: 30000,
+    });
+  }
+}
+
+/**
+ * De tempos em tempos confere a sessão: se a licença deste computador foi cortada (conta desativada,
+ * acesso liberado pra outro computador), volta pra tela de login em vez de deixar o painel aberto
+ * dando erro; se o prazo ou as funcionalidades mudaram no servidor, recarrega pra valer.
+ */
+async function watchSession() {
+  let status;
+  try {
+    status = await api("/auth/status");
+  } catch {
+    return; // painel fora do ar agora: o aviso de "sem conexão com o bot" já cobre isso
+  }
+  if (!status.authenticated) return location.reload();
+  warnAboutLicense(status.license);
+
+  const before = state.currentUser;
+  const after = status.user;
+  const accessChanged = !before || before.role !== after.role || before.expiresAt !== after.expiresAt || JSON.stringify(before.features) !== JSON.stringify(after.features);
+  if (accessChanged && before?.role !== "admin") location.reload();
 }
 
 /* ---------- Funcionalidades por plano: a pessoa vê que existe, mas não consegue usar ---------- */
@@ -324,6 +368,22 @@ function dateInputValue(ts) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/**
+ * Em quais computadores a conta já entrou e em quantos pode entrar. Só aparece com servidor de
+ * licenças (no modo local as contas não saem deste computador, então o campo nem vem).
+ */
+function devicesRowHtml(u) {
+  if (!Array.isArray(u.devices)) return "";
+  const names = u.devices.map((d) => d.name || "computador sem nome").join(", ");
+  const used = u.devices.length ? `${u.devices.length} em uso (${escapeHtml(names)})` : "nenhum em uso ainda";
+  return `<div class="access-expiry-row">
+    <label class="hint" for="devices-${u.id}">Computadores:</label>
+    <input id="devices-${u.id}" class="input" type="number" min="1" max="50" step="1" data-max-devices data-id="${u.id}" value="${u.maxDevices ?? 1}" style="max-width:80px" title="Em quantos computadores esta conta pode entrar">
+    <span class="hint">${used}</span>
+    ${u.devices.length ? `<button type="button" class="btn btn-ghost btn-sm" data-act="reset-devices" data-id="${u.id}">Liberar computadores</button>` : ""}
+  </div>`;
+}
+
 function renderUsers(users) {
   usersListEl.innerHTML = users
     .map((u) => {
@@ -342,7 +402,8 @@ function renderUsers(users) {
                  (key) =>
                    `<label class="feature-chip"><input type="checkbox" data-feature="${key}" data-id="${u.id}" ${u.features?.[key] ? "checked" : ""}> ${FEATURE_LABELS[key]}</label>`
                ).join("")}
-             </div>`;
+             </div>
+             ${devicesRowHtml(u)}`;
 
       return `
       <li class="stack-item ${u.disabled ? "is-muted" : ""}" data-id="${u.id}">
@@ -389,6 +450,13 @@ function onUsersChange(e) {
     return;
   }
 
+  const devicesInput = e.target.closest("input[data-max-devices]");
+  if (devicesInput) {
+    const maxDevices = Math.floor(Number(devicesInput.value));
+    if (maxDevices >= 1) saveUserAccess(devicesInput.dataset.id, { maxDevices });
+    return;
+  }
+
   const dateInput = e.target.closest("input[data-expiry]");
   if (dateInput && dateInput.value) {
     const expiresAt = new Date(`${dateInput.value}T23:59:59`).getTime();
@@ -403,6 +471,22 @@ async function onUsersClick(e) {
 
   if (btn.dataset.act === "clear-expiry") {
     return saveUserAccess(id, { expiresAt: null });
+  }
+
+  if (btn.dataset.act === "reset-devices") {
+    const confirmed = await confirmDialog({
+      title: "Liberar os computadores desta conta?",
+      message: "A pessoa é desconectada de onde está usando agora e pode entrar de novo em outro computador (o próximo em que ela entrar ocupa a vaga).",
+      confirmText: "Liberar",
+    });
+    if (!confirmed) return;
+    try {
+      await api(`/auth/users/${encodeURIComponent(id)}/reset-devices`, { method: "POST" });
+      await refreshUsers();
+    } catch (err) {
+      notify.error(err.message, { title: "Não foi possível liberar" });
+    }
+    return;
   }
 
   const disable = btn.dataset.act === "disable";
@@ -551,6 +635,7 @@ function initAccessTabs() {
 /** Chamado dentro de `startPanel()`, só quando a sessão já está autenticada. */
 export function initAccessControl() {
   logoutBtn?.addEventListener("click", logout);
+  setInterval(watchSession, 60_000);
 
   const isOperator = state.currentUser?.role === "operator";
   redeemKeyBtn?.classList.toggle("hidden", !isOperator);

@@ -121,7 +121,7 @@ export function extractChatContent(msg: WAMessage): ChatContent | null {
   const stubEvent = systemEventFromStub(msg);
   if (stubEvent) return { ...EMPTY, type: "system", system: stubEvent };
 
-  const content = normalizeMessageContent(msg.message);
+  const content = unwrapContent(msg.message);
   if (!content) return null;
 
   // "Fulano enviou o histórico de mensagens para Beltrano" (quem entrou no grupo recebe as mensagens recentes)
@@ -185,15 +185,18 @@ export function extractChatContent(msg: WAMessage): ChatContent | null {
     };
   }
 
-  if (content.videoMessage) {
+  // `ptvMessage` é o recado de vídeo (a bolinha redonda gravada segurando o botão da câmera): é um
+  // vídeo como outro qualquer, só vem em outro campo — antes caía em "não suportada"
+  const video = content.videoMessage || content.ptvMessage;
+  if (video) {
     return {
       ...EMPTY,
       type: "video",
-      text: content.videoMessage.caption || null,
-      mimeType: content.videoMessage.mimetype || null,
-      seconds: content.videoMessage.seconds ?? null,
-      quotedId: quotedIdOf(content.videoMessage.contextInfo),
-      mediaEnvelope: content.videoMessage,
+      text: video.caption || null,
+      mimeType: video.mimetype || null,
+      seconds: video.seconds ?? null,
+      quotedId: quotedIdOf(video.contextInfo),
+      mediaEnvelope: video,
     };
   }
 
@@ -254,6 +257,13 @@ export function extractChatContent(msg: WAMessage): ChatContent | null {
     };
   }
 
+  // Mensagem com botões ("Receber atendimento", lista de opções...) e a resposta de quem tocou num:
+  // vira texto com o corpo e uma linha por botão — o link fica clicável no painel como qualquer outro
+  const interactive = interactiveContent(content);
+  if (interactive?.text) {
+    return { ...EMPTY, type: "text", text: interactive.text, quotedId: quotedIdOf(interactive.contextInfo) };
+  }
+
   // Enquete: nome da pergunta + opções, como texto simples — não dá pra saber quem votou o quê sem
   // decifrar o voto (criptografado à parte pela própria Uber do WhatsApp), mas já evita o "não suportada"
   const poll = content.pollCreationMessage || content.pollCreationMessageV2 || content.pollCreationMessageV3;
@@ -290,13 +300,261 @@ export function extractChatContent(msg: WAMessage): ChatContent | null {
     return { ...EMPTY, type: "text", text: `🖼️ Álbum${parts.length ? ` (${parts.join(" e ")})` : ""}` };
   }
 
-  // Fica registrado qual tipo era, pra dar pra tratar depois (a mensagem em si não é guardada crua)
+  // Tipos menos comuns (evento, chamada, produto, pagamento...): viram uma linha de texto que diz o que é
+  const other = otherKnownContent(content);
+  if (other) return { ...EMPTY, type: "text", text: other.text, quotedId: quotedIdOf(other.contextInfo) };
+
+  // O tipo fica guardado junto da mensagem (e aparece na bolha), pra dar pra saber o que era e tratar
+  // depois — a mensagem em si não é guardada crua
   logger.info({ chatJid: msg.key?.remoteJid, id: msg.key?.id, contentKeys: visibleKeys }, "Mensagem de um tipo ainda não tratado pelo painel");
-  return { ...EMPTY, type: "unsupported" };
+  return { ...EMPTY, type: "unsupported", text: visibleKeys.join(", ") };
 }
 
-/** Partes de uma mensagem que nunca são conteúdo visível por si sós. */
-const INVISIBLE_CONTENT_KEYS = new Set(["senderKeyDistributionMessage", "messageContextInfo", "protocolMessage", "keepInChatMessage", "encReactionMessage"]);
+/**
+ * Partes de uma mensagem que nunca são conteúdo visível por si sós: chaves de criptografia,
+ * protocolo, e respostas cifradas (reação, comentário, resposta a evento, edição) que só fazem
+ * sentido aplicadas a outra mensagem.
+ */
+const INVISIBLE_CONTENT_KEYS = new Set([
+  "senderKeyDistributionMessage",
+  "fastRatchetKeySenderKeyDistributionMessage",
+  "messageContextInfo",
+  "protocolMessage",
+  "keepInChatMessage",
+  "encReactionMessage",
+  "encCommentMessage",
+  "encEventResponseMessage",
+  "secretEncryptedMessage",
+  "stickerSyncRmrMessage",
+  "scheduledCallEditMessage",
+]);
+
+/** Embrulhos que o `normalizeMessageContent` do baileys não abre (a mensagem de verdade vem dentro, em `.message`). */
+const EXTRA_WRAPPER_KEYS = [
+  "lottieStickerMessage", // figurinha animada
+  "botInvokeMessage",
+  "botForwardedMessage",
+  "botTaskMessage",
+  "groupMentionedMessage",
+  "statusMentionMessage",
+  "groupStatusMentionMessage",
+  "limitSharingMessage",
+  "questionMessage",
+  "questionReplyMessage",
+  "statusAddYours",
+  "pollCreationMessageV4",
+  "pollCreationOptionImageMessage",
+  "eventCoverImage",
+] as const;
+
+/** O conteúdo de verdade de uma mensagem, tirando todos os embrulhos (temporária, visualização única, figurinha animada...). */
+function unwrapContent(message: proto.IMessage | null | undefined): proto.IMessage | undefined {
+  let content = normalizeMessageContent(message);
+  for (let depth = 0; depth < 5 && content; depth++) {
+    const current: proto.IMessage = content;
+    const wrapper = EXTRA_WRAPPER_KEYS.find((key) => current[key]?.message);
+    if (!wrapper) break;
+    content = normalizeMessageContent(current[wrapper]!.message);
+  }
+  return content;
+}
+
+/** "R$ 12,50" a partir do valor em milésimos que o WhatsApp usa. Null se não veio valor. */
+function money1000(amount1000: Parameters<typeof toNumber>[0], currency: string | null | undefined): string | null {
+  const value = amount1000 == null ? 0 : toNumber(amount1000) / 1000;
+  if (!(value > 0)) return null;
+  try {
+    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: currency || "BRL" }).format(value);
+  } catch {
+    return `${currency ?? ""} ${value.toFixed(2)}`.trim();
+  }
+}
+
+/** Texto (ou legenda) de uma mensagem embutida em outra (a observação de um pagamento, por exemplo). */
+function noteText(note: proto.IMessage | null | undefined): string | null {
+  return note?.conversation || note?.extendedTextMessage?.text || null;
+}
+
+const lines = (parts: Array<string | null | undefined | false>): string => parts.filter(Boolean).join("\n");
+
+/**
+ * Tipos de mensagem menos comuns, que o painel mostra como uma linha de texto dizendo o que é (sem
+ * tentar reproduzir a aparência do WhatsApp). Null = não é nenhum destes.
+ */
+function otherKnownContent(content: proto.IMessage): { text: string; contextInfo?: proto.IContextInfo | null } | null {
+  // O WhatsApp esconde certos conteúdos dos aparelhos conectados (o painel é um): só abre no celular
+  if (content.placeholderMessage) {
+    return { text: "🔒 Mensagem que só pode ser vista no celular (o WhatsApp não envia o conteúdo para aparelhos conectados)" };
+  }
+
+  const event = content.eventMessage;
+  if (event) {
+    const start = event.startTime ? HISTORY_DATE_FORMAT.format(new Date(toNumber(event.startTime) * 1000)) : null;
+    return {
+      text: lines([`📅 Evento${event.isCanceled ? " cancelado" : ""}: ${event.name || ""}`.trim(), start && `Quando: ${start}`, event.location?.name && `Onde: ${event.location.name}`, event.description, event.joinLink]),
+      contextInfo: event.contextInfo,
+    };
+  }
+
+  const callLog = content.callLogMesssage;
+  if (callLog) {
+    const kind = callLog.isVideo ? "📹 Chamada de vídeo" : "📞 Chamada de voz";
+    const missed = callLog.callOutcome != null && callLog.callOutcome !== 0 && callLog.callOutcome !== 5; // nem atendida nem em andamento
+    const seconds = callLog.durationSecs ? toNumber(callLog.durationSecs) : 0;
+    const duration = seconds > 0 ? ` · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}` : "";
+    return { text: `${kind}${missed ? " não atendida" : ""}${duration}` };
+  }
+  if (content.call || content.bcallMessage) return { text: "📞 Chamada", contextInfo: content.call?.contextInfo };
+
+  const scheduledCall = content.scheduledCallCreationMessage;
+  if (scheduledCall) {
+    const when = scheduledCall.scheduledTimestampMs ? HISTORY_DATE_FORMAT.format(new Date(toNumber(scheduledCall.scheduledTimestampMs))) : null;
+    return { text: lines([`📞 Chamada agendada${scheduledCall.title ? `: ${scheduledCall.title}` : ""}`, when && `Quando: ${when}`]) };
+  }
+
+  const stickerPack = content.stickerPackMessage;
+  if (stickerPack) {
+    return { text: lines([`🧩 Pacote de figurinhas${stickerPack.name ? `: ${stickerPack.name}` : ""}`, stickerPack.caption]), contextInfo: stickerPack.contextInfo };
+  }
+
+  const product = content.productMessage;
+  if (product) {
+    const item = product.product;
+    return {
+      text: lines([`🛍️ Produto${item?.title ? `: ${item.title}` : ""}`, money1000(item?.priceAmount1000, item?.currencyCode), item?.description, product.body, item?.url]),
+      contextInfo: product.contextInfo,
+    };
+  }
+
+  const order = content.orderMessage;
+  if (order) {
+    const count = order.itemCount ? `${order.itemCount} ${order.itemCount === 1 ? "item" : "itens"}` : null;
+    return {
+      text: lines([`🧾 Pedido${order.orderTitle ? `: ${order.orderTitle}` : ""}`, [count, money1000(order.totalAmount1000, order.totalCurrencyCode)].filter(Boolean).join(" · "), order.message]),
+      contextInfo: order.contextInfo,
+    };
+  }
+  if (content.invoiceMessage) return { text: "🧾 Fatura" };
+
+  const paymentRequest = content.requestPaymentMessage;
+  if (paymentRequest) {
+    const amount = money1000(paymentRequest.amount1000, paymentRequest.currencyCodeIso4217);
+    return { text: lines([`💸 Pedido de pagamento${amount ? `: ${amount}` : ""}`, noteText(paymentRequest.noteMessage)]) };
+  }
+  if (content.sendPaymentMessage) return { text: lines(["💸 Pagamento pelo WhatsApp", noteText(content.sendPaymentMessage.noteMessage)]) };
+  if (content.declinePaymentRequestMessage) return { text: "💸 Pedido de pagamento recusado" };
+  if (content.cancelPaymentRequestMessage) return { text: "💸 Pedido de pagamento cancelado" };
+  if (content.paymentInviteMessage) return { text: "💸 Convite para usar pagamentos no WhatsApp" };
+
+  if (content.requestPhoneNumberMessage) return { text: "📱 Pediu o seu número de telefone", contextInfo: content.requestPhoneNumberMessage.contextInfo };
+
+  const pollResult = content.pollResultSnapshotMessage || content.pollResultSnapshotMessageV3;
+  if (pollResult) {
+    const votes = (pollResult.pollVotes ?? []).map((v) => `• ${v.optionName}: ${v.optionVoteCount ? toNumber(v.optionVoteCount) : 0}`);
+    return { text: lines([`📊 Resultado da enquete: ${pollResult.name || ""}`.trim(), ...votes]), contextInfo: pollResult.contextInfo };
+  }
+
+  const channelInvite = content.newsletterAdminInviteMessage || content.newsletterFollowerInviteMessageV2;
+  if (channelInvite) {
+    return { text: lines([`📢 Convite para o canal "${channelInvite.newsletterName || ""}"`, channelInvite.caption]), contextInfo: channelInvite.contextInfo };
+  }
+
+  // Comentário numa publicação: o que importa é o texto dele
+  const comment = noteText(content.commentMessage?.message);
+  if (comment) return { text: comment };
+
+  return null;
+}
+
+interface InteractiveContent {
+  text: string;
+  contextInfo: proto.IContextInfo | null | undefined;
+}
+
+/** Junta título, corpo, rodapé e botões num texto só, pulando o que veio vazio. */
+function joinInteractive(parts: (string | null | undefined)[], buttons: string[]): string {
+  const body = parts.map((part) => part?.trim()).filter(Boolean).join("\n");
+  return [body, buttons.join("\n")].filter(Boolean).join("\n\n");
+}
+
+/** Botão de link/ligação/copiar: rótulo + o destino. Sem destino, é um botão de resposta comum. */
+function buttonLine(label: string | null | undefined, url?: string | null, phone?: string | null, code?: string | null): string {
+  const text = label?.trim() || "";
+  if (url) return `🔗 ${text ? `${text}: ` : ""}${url}`;
+  if (phone) return `📞 ${text ? `${text}: ` : ""}${phone}`;
+  if (code) return `📋 ${text ? `${text}: ` : ""}${code}`;
+  return text ? `🔘 ${text}` : "";
+}
+
+/** Botão do formato novo (`nativeFlowMessage`): o rótulo e o destino vêm num JSON à parte. */
+function nativeFlowButtonLine(button: proto.Message.InteractiveMessage.NativeFlowMessage.INativeFlowButton): string {
+  try {
+    const params = JSON.parse(button.buttonParamsJson || "{}") as { display_text?: string; title?: string; url?: string; phone_number?: string; copy_code?: string };
+    return buttonLine(params.display_text || params.title, params.url, params.phone_number, params.copy_code);
+  } catch {
+    return "";
+  }
+}
+
+function interactiveMessageText(interactive: proto.Message.IInteractiveMessage): string {
+  const buttons = (interactive.nativeFlowMessage?.buttons ?? []).map(nativeFlowButtonLine).filter(Boolean);
+  return joinInteractive([interactive.header?.title, interactive.header?.subtitle, interactive.body?.text, interactive.footer?.text], buttons);
+}
+
+/**
+ * Mensagens com botões e as respostas a elas. O WhatsApp tem vários formatos pra mesma coisa (o novo
+ * `interactiveMessage`, os antigos `templateMessage`/`buttonsMessage`/`listMessage`); todos viram
+ * o mesmo texto. Null = não é nenhum desses.
+ */
+function interactiveContent(content: proto.IMessage): InteractiveContent | null {
+  if (content.interactiveMessage) {
+    return { text: interactiveMessageText(content.interactiveMessage), contextInfo: content.interactiveMessage.contextInfo };
+  }
+
+  const template = content.templateMessage;
+  if (template) {
+    const hydrated = template.hydratedTemplate || template.hydratedFourRowTemplate;
+    if (hydrated) {
+      const buttons = (hydrated.hydratedButtons ?? [])
+        .map((b) => buttonLine(b.urlButton?.displayText || b.callButton?.displayText || b.quickReplyButton?.displayText, b.urlButton?.url, b.callButton?.phoneNumber))
+        .filter(Boolean);
+      return {
+        text: joinInteractive([hydrated.hydratedTitleText, hydrated.hydratedContentText, hydrated.hydratedFooterText], buttons),
+        contextInfo: template.contextInfo,
+      };
+    }
+    if (template.interactiveMessageTemplate) {
+      return { text: interactiveMessageText(template.interactiveMessageTemplate), contextInfo: template.contextInfo };
+    }
+  }
+
+  const buttonsMessage = content.buttonsMessage;
+  if (buttonsMessage) {
+    const buttons = (buttonsMessage.buttons ?? []).map((b) => buttonLine(b.buttonText?.displayText)).filter(Boolean);
+    return {
+      text: joinInteractive([buttonsMessage.text, buttonsMessage.contentText, buttonsMessage.footerText], buttons),
+      contextInfo: buttonsMessage.contextInfo,
+    };
+  }
+
+  const list = content.listMessage;
+  if (list) {
+    const rows = (list.sections ?? []).flatMap((section) => (section.rows ?? []).map((row) => (row.title ? `• ${row.title}` : ""))).filter(Boolean);
+    return { text: joinInteractive([list.title, list.description, list.footerText], rows), contextInfo: list.contextInfo };
+  }
+
+  // Resposta de quem tocou num botão ou escolheu um item da lista: o que a pessoa escolheu
+  const reply = content.buttonsResponseMessage || content.templateButtonReplyMessage;
+  if (reply) return { text: reply.selectedDisplayText?.trim() || "", contextInfo: reply.contextInfo };
+  if (content.listResponseMessage) {
+    return { text: content.listResponseMessage.title?.trim() || "", contextInfo: content.listResponseMessage.contextInfo };
+  }
+  if (content.interactiveResponseMessage) {
+    return { text: content.interactiveResponseMessage.body?.text?.trim() || "", contextInfo: content.interactiveResponseMessage.contextInfo };
+  }
+
+  return null;
+}
 
 /** Quem mandou a mensagem / fez a ação, com todos os JIDs que o WhatsApp informou (telefone e LID). */
 function actorOf(msg: WAMessage): string[] {

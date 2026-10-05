@@ -42,9 +42,12 @@ export class ChatRealtime {
    * Avisa quem está com o painel desta conta aberto que uma mensagem chegou, foi enviada ou ganhou mídia.
    * `isNew` separa a mensagem que acabou de chegar de uma atualização de mensagem antiga (mídia baixada,
    * status de entrega, apagada...): o painel só toca o som de mensagem nova no primeiro caso.
+   * `sound` diz se essa conta toca som pra essa conversa (configuração da própria conta, conversa não
+   * arquivada) — quem decide é o servidor, pra cada WhatsApp seguir a configuração dele e não a da
+   * conta que estiver aberta na tela.
    */
-  publish(accountId: string, message: ChatMessageRecord, isNew = false): void {
-    this.send(accountId, { type: "chat-message", message, isNew });
+  publish(accountId: string, message: ChatMessageRecord, isNew = false, sound = true): void {
+    this.send(accountId, { type: "chat-message", message, isNew, sound });
   }
 
   /** Avisa que uma mensagem sumiu do histórico (apagada só pra você, neste painel). */

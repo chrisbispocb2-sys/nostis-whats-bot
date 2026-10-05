@@ -445,6 +445,11 @@ export class ChatStore {
   }
 
   /** Arquiva (ou desarquiva) uma conversa: some da lista principal, mas continua recebendo mensagens. */
+  isArchived(chatJid: string): boolean {
+    const row = this.db.query("SELECT archived FROM chats WHERE jid = $jid").get({ $jid: chatJid }) as { archived: number } | null;
+    return row?.archived === 1;
+  }
+
   setArchived(chatJid: string, archived: boolean): void {
     this.db.query("UPDATE chats SET archived = $v WHERE jid = $jid").run({ $jid: chatJid, $v: archived ? 1 : 0 });
   }

@@ -19,6 +19,54 @@ test("tipo realmente desconhecido ainda cai em 'unsupported'", () => {
   expect(extractChatContent(msg({ buttonsMessage: {} } as never))).toMatchObject({ type: "unsupported" });
 });
 
+test("mensagem com botão de link (interactiveMessage): corpo + rótulo e link do botão", () => {
+  const content = extractChatContent(
+    msg({
+      interactiveMessage: {
+        body: { text: "*ON*, chama pv 🚘" },
+        nativeFlowMessage: {
+          buttons: [{ name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: "Receber atendimento", url: "https://wa.me/5511977770000" }) }],
+        },
+        contextInfo: { stanzaId: "PEDIDO" },
+      },
+    } as never)
+  );
+  expect(content).toMatchObject({ type: "text", quotedId: "PEDIDO" });
+  expect(content!.text).toBe("*ON*, chama pv 🚘\n\n🔗 Receber atendimento: https://wa.me/5511977770000");
+});
+
+test("mensagem com botão que chega dentro de viewOnceMessage (como o WhatsApp entrega em grupo) também é lida", () => {
+  const content = extractChatContent(
+    msg({ viewOnceMessage: { message: { messageContextInfo: {}, interactiveMessage: { body: { text: "chama pv" }, nativeFlowMessage: { buttons: [] } } } } } as never)
+  );
+  expect(content).toMatchObject({ type: "text", text: "chama pv" });
+});
+
+test("botões nos formatos antigos (templateMessage e buttonsMessage) e JSON de botão quebrado", () => {
+  const template = extractChatContent(
+    msg({
+      templateMessage: {
+        hydratedTemplate: {
+          hydratedContentText: "Fale com a gente",
+          hydratedButtons: [{ urlButton: { displayText: "Abrir", url: "https://exemplo.com" } }, { callButton: { displayText: "Ligar", phoneNumber: "+5511977770000" } }],
+        },
+      },
+    } as never)
+  );
+  expect(template!.text).toBe("Fale com a gente\n\n🔗 Abrir: https://exemplo.com\n📞 Ligar: +5511977770000");
+
+  const buttons = extractChatContent(msg({ buttonsMessage: { contentText: "Confirma?", buttons: [{ buttonText: { displayText: "Sim" } }, { buttonText: { displayText: "Não" } }] } } as never));
+  expect(buttons!.text).toBe("Confirma?\n\n🔘 Sim\n🔘 Não");
+
+  const broken = extractChatContent(msg({ interactiveMessage: { body: { text: "oi" }, nativeFlowMessage: { buttons: [{ name: "cta_url", buttonParamsJson: "{" }] } } } as never));
+  expect(broken!.text).toBe("oi");
+});
+
+test("resposta a um botão: mostra a opção que a pessoa escolheu", () => {
+  expect(extractChatContent(msg({ buttonsResponseMessage: { selectedDisplayText: "Sim" } } as never))).toMatchObject({ type: "text", text: "Sim" });
+  expect(extractChatContent(msg({ listResponseMessage: { title: "Opção 2" } } as never))).toMatchObject({ type: "text", text: "Opção 2" });
+});
+
 test("enquete (pollCreationMessage): vira texto legível com a pergunta e as opções", () => {
   const content = extractChatContent(
     msg({
@@ -174,6 +222,52 @@ test("mensagens temporárias ligadas/desligadas e chamada perdida viram aviso", 
   expect(systemText(stubMsg(WAMessageStubType.CALL_MISSED_VOICE))).toBe("📞 Chamada de voz perdida");
 });
 
-test("tipo realmente desconhecido continua como 'não suportada' (e não some)", () => {
-  expect(extractChatContent(msg({ orderMessage: { orderId: "1" } } as never))).toMatchObject({ type: "unsupported" });
+test("tipo realmente desconhecido continua como 'não suportada' (e não some), guardando qual era o tipo", () => {
+  expect(extractChatContent(msg({ messageContextInfo: {}, highlyStructuredMessage: { namespace: "x" } } as never))).toMatchObject({
+    type: "unsupported",
+    text: "highlyStructuredMessage",
+  });
+});
+
+test("recado de vídeo (ptvMessage, a bolinha redonda): é um vídeo, com a mídia pra baixar", () => {
+  const ptv = { mimetype: "video/mp4", seconds: 7, mediaKey: "k" };
+  const content = extractChatContent(msg({ messageContextInfo: {}, ptvMessage: ptv } as never));
+  expect(content).toMatchObject({ type: "video", mimeType: "video/mp4", seconds: 7 });
+  expect(content!.mediaEnvelope).toEqual(ptv);
+});
+
+test("figurinha animada (embrulhada em lottieStickerMessage): é uma figurinha", () => {
+  const sticker = { mimetype: "application/was", isLottie: true };
+  const content = extractChatContent(msg({ lottieStickerMessage: { message: { stickerMessage: sticker } } } as never));
+  expect(content).toMatchObject({ type: "sticker", mimeType: "application/was" });
+  expect(content!.mediaEnvelope).toEqual(sticker);
+});
+
+test("conteúdo que o WhatsApp esconde de aparelhos conectados: avisa que só abre no celular", () => {
+  const content = extractChatContent(msg({ placeholderMessage: { type: 0 } } as never));
+  expect(content).toMatchObject({ type: "text" });
+  expect(content!.text).toContain("só pode ser vista no celular");
+});
+
+test("tipos menos comuns viram uma linha de texto dizendo o que é", () => {
+  const text = (message: unknown) => {
+    const content = extractChatContent(msg(message as never));
+    expect(content).toMatchObject({ type: "text" });
+    return content!.text!;
+  };
+
+  expect(text({ eventMessage: { name: "Churrasco", description: "Traga gelo", location: { name: "Casa do Zé" } } })).toBe("📅 Evento: Churrasco\nOnde: Casa do Zé\nTraga gelo");
+  expect(text({ callLogMesssage: { isVideo: false, callOutcome: 1 } })).toBe("📞 Chamada de voz não atendida");
+  expect(text({ callLogMesssage: { isVideo: true, callOutcome: 0, durationSecs: 75 } })).toBe("📹 Chamada de vídeo · 1:15");
+  expect(text({ stickerPackMessage: { name: "Gatinhos" } })).toBe("🧩 Pacote de figurinhas: Gatinhos");
+  expect(text({ productMessage: { product: { title: "Camiseta", priceAmount1000: 59900, currencyCode: "BRL" } } })).toContain("🛍️ Produto: Camiseta\nR$");
+  expect(text({ orderMessage: { orderTitle: "Loja", itemCount: 2, message: "Quero esses" } })).toBe("🧾 Pedido: Loja\n2 itens\nQuero esses");
+  expect(text({ requestPaymentMessage: { amount1000: 25000, currencyCodeIso4217: "BRL", noteMessage: { conversation: "corrida" } } })).toContain("💸 Pedido de pagamento: R$");
+  expect(text({ requestPhoneNumberMessage: {} })).toBe("📱 Pediu o seu número de telefone");
+  expect(text({ pollResultSnapshotMessage: { name: "Vai?", pollVotes: [{ optionName: "Sim", optionVoteCount: 3 }] } })).toBe("📊 Resultado da enquete: Vai?\n• Sim: 3");
+});
+
+test("respostas cifradas e edições que só valem aplicadas a outra mensagem não viram bolha", () => {
+  expect(extractChatContent(msg({ messageContextInfo: {}, secretEncryptedMessage: { encPayload: "x" } } as never))).toBeNull();
+  expect(extractChatContent(msg({ encEventResponseMessage: {} } as never))).toBeNull();
 });

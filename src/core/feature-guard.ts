@@ -1,5 +1,5 @@
 import { hasFeatureAccess, type FeatureKey } from "./user-store";
-import type { AuthService } from "./auth-service";
+import type { AuthProvider } from "./auth-provider";
 
 const BLOCKED_MESSAGE = "Essa funcionalidade não está liberada para sua conta. Fale com o administrador.";
 
@@ -56,7 +56,7 @@ function blocked(): Response {
  * pay-token da janela de pagamento, que já é confiável e escopado a uma conta só) nem quando o
  * usuário é `admin` (admin nunca é restringido — essas travas controlam clientes, não o dono).
  */
-export async function applyFeatureGate(req: Request, url: URL, auth: AuthService): Promise<Request | Response> {
+export async function applyFeatureGate(req: Request, url: URL, auth: AuthProvider): Promise<Request | Response> {
   const user = auth.currentUser(req);
   if (!user || user.role === "admin") return req;
 

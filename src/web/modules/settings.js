@@ -350,7 +350,6 @@ export async function saveSettings() {
     closeModal(settingsModal);
     // Ligar o recado com o bot ligado desliga o bot: o cabeçalho relê o estado sozinho, mas já avisa aqui
     if (awayMessageEnabled) document.dispatchEvent(new CustomEvent("bot-settings-changed"));
-    document.dispatchEvent(new CustomEvent("notification-sound-changed", { detail: { enabled: notificationSoundEnabled } }));
     notify.success("As novas configurações já estão valendo.", { title: "Configurações salvas" });
   } catch (err) {
     notify.error(err.message, { title: "Não foi possível salvar" });

@@ -32,7 +32,7 @@ import { UberTripTrackerService, type UberStatusFetcher } from "../services/uber
 import { openUberStatusFetcher } from "./uber-cdp";
 import { UberTripStore } from "./uber-trip-store";
 import type { RideMessageKey } from "./settings-store";
-import { describeRide, extractChamaAmountCents, extractUberShareToken, type UberTripSnapshot } from "./uber-trip";
+import { describeRide, describeRoute, extractChamaAmountCents, extractUberShareToken, type UberTripSnapshot } from "./uber-trip";
 import { SentMessageRegistry } from "../utils/sent-registry";
 import { phoneFromJid, normalizeJid } from "../utils/jid";
 import { centsToReais, formatBRL } from "../utils/money";
@@ -52,7 +52,7 @@ export interface AccountOptions {
   tempDir?: string;
   createConnection?: ConnectionFactory;
   /** Aviso no computador (notificação do Windows). */
-  notify?: (title: string, body: string) => void;
+  notify?: (title: string, body: string, options?: { routine?: boolean }) => void;
   /** Só pra testes: prazo da segurança em ms, no lugar do configurado (que é em minutos). */
   guardTimeoutMs?: () => number;
   /** Só pra testes: tempos da saudação (o padrão espera vários segundos). */
@@ -151,7 +151,8 @@ export class Account {
   lastAutoShutdown: AutoShutdownEvent | null = null;
 
   /** Mostra um aviso no computador. */
-  readonly notify: (title: string, body: string) => void;
+  /** `routine`: aviso do dia a dia, que respeita a configuração de som da conta (ver o construtor). */
+  readonly notify: (title: string, body: string, options?: { routine?: boolean }) => void;
   private readonly handler: MessageHandler;
   private readonly onMisticChange?: () => void;
   private readonly chatMediaRetrySweepMs: number;
@@ -162,7 +163,12 @@ export class Account {
     this.onMisticChange = options.onMisticChange;
     this.name = meta.name;
     this.createdAt = meta.createdAt;
-    this.notify = options.notify ?? ((title, body) => void sendNotification(title, body));
+    // Os avisos de rotina do Windows (cada resposta que o bot manda num grupo) seguem a configuração
+    // de som desta conta: com o som desligado o aviso aparece, mas mudo. Os importantes (bot
+    // desligado pela segurança, pagamento, saque) sempre tocam.
+    this.notify =
+      options.notify ??
+      ((title, body, { routine = false } = {}) => void sendNotification(title, body, { sound: !routine || this.settings.get().notificationSoundEnabled }));
     this.chatMediaRetrySweepMs = options.chatMediaRetrySweepMs ?? 5 * 60_000;
 
     this.paths = accountPaths(meta.id, options.appDataDir, options.tempDir);
@@ -313,6 +319,7 @@ export class Account {
       // Os textos são os das Configurações (ou os padrão). Carro/placa/motorista entram nos avisos em
       // que o cliente precisa saber quem procurar; com vários marcos pulados de uma vez, só o atual sai
       // (ver `UberTripTrackerOptions.onNearPickup`), então o de 1 min também leva os dados.
+      onRouteKnown: (chatJid, snapshot) => this.sendRideRoute(chatJid, snapshot),
       onNearPickup: (chatJid, snapshot) => this.sendRideNotice(chatJid, "rideNear2MinMessage", snapshot),
       onNearPickup1Min: (chatJid, snapshot) => this.sendRideNotice(chatJid, "rideNear1MinMessage", snapshot),
       onArrivedPickup: (chatJid, snapshot) => this.sendRideNotice(chatJid, "rideArrivedMessage", snapshot),
@@ -398,6 +405,24 @@ export class Account {
   }
 
   /**
+   * Mensagem nova nessa conversa toca som no painel? Vale a configuração de som DESTA conta (cada
+   * WhatsApp tem a sua), e conversa arquivada não toca: ela nem aparece na lista.
+   */
+  playsSoundFor(chatJid: string): boolean {
+    return this.settings.get().notificationSoundEnabled && !this.chats.isArchived(chatJid);
+  }
+
+  /**
+   * O cliente dessa conversa já pagou a corrida em acompanhamento? Vale qualquer cobrança dele (a
+   * automática ou uma feita na mão) criada desde `since` e já paga — as de corridas anteriores não contam.
+   */
+  isRidePaid(chatJid: string, since: number): boolean {
+    return this.charges
+      .list()
+      .some((c) => c.kind === "charge" && c.status === "paid" && c.createdAt >= since && (c.chatJid === chatJid || c.contactJids.includes(chatJid)));
+  }
+
+  /**
    * Link de corrida detectado num texto que você mandou pro cliente — começa a acompanhar sozinho.
    * Chamado tanto por quem manda pelo painel (rede de segurança, caso o valor já tenha sido achado
    * por outro caminho) quanto, principalmente, por quem manda o link direto do celular, sem abrir o
@@ -441,6 +466,20 @@ export class Account {
       await this.sendPrivate(chatJid, { text: withDetails });
     } catch (err) {
       logger.error({ err, account: this.name, chatJid, notice: key }, "Falha ao mandar aviso da corrida ao cliente");
+    }
+  }
+
+  /**
+   * Manda ao cliente os endereços de partida e destino lidos do link da corrida, pedindo pra conferir
+   * e dar um ok (e lembrando que dá pra acompanhar pelo link).
+   */
+  private async sendRideRoute(chatJid: string, snapshot: UberTripSnapshot): Promise<void> {
+    const route = describeRoute(snapshot);
+    if (!route) return;
+    try {
+      await this.sendPrivate(chatJid, { text: `${route}\n\n${this.settings.rideMessageText("rideRouteMessage")}` });
+    } catch (err) {
+      logger.error({ err, account: this.name, chatJid }, "Falha ao mandar os endereços da corrida pro cliente conferir");
     }
   }
 

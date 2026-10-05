@@ -64,6 +64,11 @@ export interface UberTripTrackerOptions {
    */
   onChargeSkipped?: (chatJid: string, agreedAmountCents: number) => void;
   /**
+   * Dispara uma vez só por corrida, na primeira leitura que traz o endereço de partida e/ou de
+   * destino (antes do embarque) — pra mandar ao cliente conferir. Sai antes dos avisos de marco.
+   */
+  onRouteKnown?: (chatJid: string, snapshot: UberTripSnapshot) => void | Promise<void>;
+  /**
    * Avisos de cada marco. Quando uma leitura pula vários marcos de uma vez (comum — a Uber não é um
    * cronômetro suave, e pode pular de "longe" direto pra "chegou"), só o aviso do marco ATUAL sai: os
    * que ficaram pra trás já não são verdade e mandar todos juntos confundia o cliente.
@@ -85,11 +90,18 @@ export interface UberTripTrackerOptions {
 
 /** Situação de uma corrida sendo acompanhada, pro painel mostrar. */
 export interface UberTripStatus {
+  /** Token do link público da corrida (trip.uber.com/XXXX), pro painel abrir a página dela. */
+  shareToken: string;
   phase: UberTripPhase;
   startedAt: number;
   /** null = sem valor combinado (acompanha e avisa, mas não cobra sozinho). */
   agreedAmountCents: number | null;
   charged: boolean;
+  /**
+   * Desde quando um pagamento do cliente conta como sendo desta corrida: o começo dela, ou a hora da
+   * cobrança herdada de uma corrida anterior que não embarcou (ver `CHARGE_CARRY_OVER_MS`).
+   */
+  paymentSince: number;
   /** Última leitura que deu certo (null = ainda não conseguiu ler nenhuma). */
   lastCheckedAt: number | null;
   etaSeconds: number | null;
@@ -105,6 +117,7 @@ interface Tracker {
   startedAt: number;
   phase: UberTripPhase;
   charged: boolean;
+  paymentSince: number;
   timer: ReturnType<typeof setTimeout> | null;
   fetcher: UberStatusFetcher;
   consecutiveErrors: number;
@@ -112,6 +125,8 @@ interface Tracker {
   sawTrip: boolean;
   missingReadings: number;
   lastPlate: string | null;
+  /** Os endereços já foram mandados pro cliente conferir (ver `onRouteKnown`). */
+  routeSent: boolean;
   lastSnapshot: UberTripSnapshot | null;
   lastCheckedAt: number | null;
 }
@@ -150,10 +165,12 @@ export class UberTripTrackerService {
   private statusOf(tracker: Tracker): UberTripStatus {
     const snapshot = tracker.lastSnapshot;
     return {
+      shareToken: tracker.shareToken,
       phase: tracker.phase,
       startedAt: tracker.startedAt,
       agreedAmountCents: tracker.agreedAmountCents,
       charged: tracker.charged,
+      paymentSince: tracker.paymentSince,
       lastCheckedAt: tracker.lastCheckedAt,
       etaSeconds: snapshot?.etaSeconds ?? null,
       driverName: snapshot?.driverName ?? null,
@@ -191,7 +208,10 @@ export class UberTripTrackerService {
       startedAt: Date.now(),
       phase: "waiting_pickup",
       charged: alreadyCharged,
+      // A hora guardada é a de depois de a cobrança herdada sair: a folga cobre o tempo de gerá-la
+      paymentSince: alreadyCharged && previousChargeAt !== undefined ? previousChargeAt - 60_000 : Date.now(),
       lastPlate: null,
+      routeSent: false,
     });
 
     if (alreadyCharged) {
@@ -312,12 +332,14 @@ export class UberTripTrackerService {
       startedAt: trip.startedAt,
       phase: trip.phase,
       charged: trip.charged,
+      paymentSince: trip.paymentSince ?? trip.startedAt,
       timer: null,
       fetcher,
       consecutiveErrors: 0,
       sawTrip: trip.phase !== "waiting_pickup",
       missingReadings: 0,
       lastPlate: trip.lastPlate,
+      routeSent: trip.routeSent ?? true,
       lastSnapshot: null,
       lastCheckedAt: null,
     };
@@ -339,7 +361,9 @@ export class UberTripTrackerService {
           startedAt: t.startedAt,
           phase: t.phase,
           charged: t.charged,
+          paymentSince: t.paymentSince,
           lastPlate: t.lastPlate,
+          routeSent: t.routeSent,
         })),
         unconsumedCharges: Object.fromEntries(this.unconsumedCharges),
       });
@@ -449,6 +473,16 @@ export class UberTripTrackerService {
         if (driverChanged) tracker.phase = "waiting_pickup";
         this.persist();
         if (driverChanged && clientWasNotified) await this.options.onDriverChanged?.(chatJid, snapshot);
+        if (!isCurrent()) return;
+      }
+
+      // Endereços da corrida pro cliente conferir: uma vez só, e antes de qualquer aviso de marco.
+      // Com o cliente já embarcado não há mais o que conferir.
+      const boarded = this.hasBoarded(tracker) || snapshot.clientStatus === "OnTrip";
+      if (!tracker.routeSent && !boarded && (snapshot.pickupAddress || snapshot.destinationAddress)) {
+        tracker.routeSent = true;
+        this.persist();
+        await this.options.onRouteKnown?.(chatJid, snapshot);
         if (!isCurrent()) return;
       }
 

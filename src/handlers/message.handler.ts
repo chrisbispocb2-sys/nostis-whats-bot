@@ -57,6 +57,7 @@ export class MessageHandler {
 
       // Em conversas com LID o contato vem oculto; ban, leads e regras usam o telefone real
       const contactJid = await identityService.resolveContactJid(sock, msg, remoteJid);
+      await chats.prepareMentions(msg);
       chats.recordIncoming(sock, msg, remoteJid, contactJid, false);
 
       if (isBacklog) return;
@@ -107,6 +108,8 @@ export class MessageHandler {
 
     // Resolve LID para telefone real
     const participantJid = await identityService.resolveParticipantJid(sock, msg, remoteJid);
+    // Marcações ("@150170008293498") viram o nome/telefone de quem foi marcado ao gravar
+    await chats.prepareMentions(msg);
     chats.recordIncoming(sock, msg, remoteJid, participantJid, true);
 
     if (isBacklog) return;
@@ -199,6 +202,7 @@ export class MessageHandler {
 
     if (chatJid.endsWith("@g.us")) {
       // Aviso de grupo de uma ação sua ("Você adicionou Fulano") vem sem conteúdo, só como stub
+      await this.account.chats.prepareMentions(msg);
       if (hasContent || msg.messageStubType != null) this.account.chats.recordOutgoing(sock, msg, chatJid, true, this.account.sent.has(msg.key.id));
       return;
     }

@@ -10,6 +10,9 @@ const panelResizer = document.getElementById("panel-resizer");
 const sidebarOpenBtn = document.getElementById("sidebar-open");
 const sidebarCloseBtn = document.getElementById("sidebar-close");
 const sidebarScrim = document.getElementById("sidebar-scrim");
+const sidebarCollapseBtn = document.getElementById("sidebar-collapse");
+const sidebarExpandBtn = document.getElementById("sidebar-expand");
+const SIDEBAR_COLLAPSED_KEY = "brinzy-sidebar-collapsed";
 
 let currentWidth = DEFAULT_SIDEBAR_WIDTH;
 
@@ -23,6 +26,17 @@ export function applySidebarWidth(width) {
 function saveWidth() {
   try {
     localStorage.setItem(SIDEBAR_WIDTH_KEY, String(currentWidth));
+  } catch {
+    // localStorage indisponível (navegação anônima)
+  }
+}
+
+/** Recolhe (ou mostra de volta) a lista de grupos, pra sobrar mais espaço pro painel e pras conversas. */
+function setCollapsed(collapsed, { save = true } = {}) {
+  layout.classList.toggle("sidebar-collapsed", collapsed);
+  if (!save) return;
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
   } catch {
     // localStorage indisponível (navegação anônima)
   }
@@ -78,6 +92,15 @@ export function initSidebarResizer() {
     applySidebarWidth(currentWidth + (e.key === "ArrowRight" ? KEY_STEP : -KEY_STEP));
     saveWidth();
   });
+
+  // Recolher/mostrar a lista de grupos em telas largas (lembra a escolha entre aberturas do painel)
+  try {
+    setCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1", { save: false });
+  } catch {
+    // localStorage indisponível: começa aberta
+  }
+  sidebarCollapseBtn.addEventListener("click", () => setCollapsed(true));
+  sidebarExpandBtn.addEventListener("click", () => setCollapsed(false));
 
   // Gaveta de grupos em telas estreitas
   sidebarOpenBtn.addEventListener("click", () => setDrawer(true));

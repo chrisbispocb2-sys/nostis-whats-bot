@@ -31,6 +31,8 @@ export interface Settings {
   rideChargeMessage: string;
   /** Em que momento da corrida a cobrança automática sai. */
   rideChargeTrigger: RideChargeTrigger;
+  /** Texto mandado junto com os endereços de partida e destino, pro cliente conferir (o seu, ou o padrão). */
+  rideRouteMessage: string;
   /** Avisos mandados ao cliente em cada marco da corrida (os seus, ou os padrão quando vazios). */
   rideNear2MinMessage: string;
   rideNear1MinMessage: string;
@@ -48,6 +50,8 @@ const RIDE_CHARGE_TRIGGERS: RideChargeTrigger[] = ["on_link", "near_2min", "near
 
 /** Os avisos de corrida editáveis: campo de `Settings` → texto padrão. */
 export const DEFAULT_RIDE_MESSAGES = {
+  // Vai logo abaixo dos endereços de partida e destino lidos do link (ver `Account.sendRideRoute`)
+  rideRouteMessage: "Confere pra mim se os endereços estão certinhos e me dá um *ok*? 👍\nVocê pode acompanhar a corrida em tempo real pelo link que te mandei.",
   rideNear2MinMessage: "🚗 Seu motorista está chegando, mais ou menos 2 minutinhos!",
   rideNear1MinMessage: "🚗 Seu motorista está quase chegando, menos de 1 minutinho!",
   rideArrivedMessage: "✅ Seu motorista chegou no local combinado!",
@@ -71,6 +75,7 @@ export interface SettingsInput {
   rideAutoChargeEnabled?: boolean;
   rideChargeMessage?: string;
   rideChargeTrigger?: RideChargeTrigger;
+  rideRouteMessage?: string;
   rideNear2MinMessage?: string;
   rideNear1MinMessage?: string;
   rideArrivedMessage?: string;
@@ -104,6 +109,7 @@ const DEFAULT_SETTINGS: Settings = {
   rideAutoChargeEnabled: true,
   rideChargeMessage: "",
   rideChargeTrigger: "near_2min",
+  rideRouteMessage: "",
   rideNear2MinMessage: "",
   rideNear1MinMessage: "",
   rideArrivedMessage: "",

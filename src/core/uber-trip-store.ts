@@ -13,6 +13,10 @@ export interface PersistedUberTrip {
   phase: UberTripPhase;
   charged: boolean;
   lastPlate: string | null;
+  /** Desde quando um pagamento do cliente conta como sendo desta corrida (ausente = desde que ela começou). */
+  paymentSince?: number;
+  /** Os endereços já foram mandados pro cliente conferir (ausente = corrida guardada antes de isso existir: não manda). */
+  routeSent?: boolean;
 }
 
 export interface PersistedUberTrips {

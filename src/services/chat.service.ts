@@ -1,10 +1,10 @@
 import { writeFileSync, mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { downloadMediaMessage, generateMessageIDV2, toNumber } from "baileys-joss";
+import { downloadMediaMessage, generateMessageIDV2, normalizeMessageContent, toNumber } from "baileys-joss";
 import type { WASocket, WAMessage, WAMessageKey, AnyMessageContent } from "baileys-joss";
 import { ChatStore, type ChatMessageRecord, type ChatSummary, type ChatFolder } from "../core/chat-store";
-import { extractChatContent, extractRevokeKey, renderSystemText, type ChatMessageType } from "../utils/chat-content";
+import { extractChatContent, extractRevokeKey, renderSystemText, type ChatContent, type ChatMessageType } from "../utils/chat-content";
 import { normalizeJid, phoneFromJid } from "../utils/jid";
 import { logger } from "../utils/logger";
 import { SentMessageRegistry } from "../utils/sent-registry";
@@ -110,6 +110,9 @@ function formatPhoneForDisplay(digits: string): string {
   return br ? `+55 ${br[1]} ${br[2]}-${br[3]}` : `+${digits}`;
 }
 
+/** Uma marcação no meio do texto: "@" seguido do número da pessoa (telefone ou LID). */
+const MENTION_PATTERN = /@(\d{7,20})(?!\d)/g;
+
 /** Servidor de mídia padrão do WhatsApp — o que sempre responde pelo caminho (`directPath`) de qualquer mídia. */
 const DEFAULT_MEDIA_HOST = "mmg.whatsapp.net";
 
@@ -157,6 +160,19 @@ function buildOutgoingContent(media: OperatorMediaInput, caption: string, buffer
   }
 }
 
+/**
+ * A mensagem do jeito que o download de mídia entende. Recado de vídeo (`ptvMessage`) e figurinha
+ * animada (embrulhada em `lottieStickerMessage`) trazem a mídia num campo que o download não
+ * procura: monta a mensagem no formato direto (`videoMessage`/`stickerMessage`), igual ao que
+ * `retryMediaDownload` já faz com a mídia guardada.
+ */
+function downloadableMessage(msg: WAMessage, content: ChatContent): WAMessage {
+  const field = `${content.type}Message`;
+  const direct = normalizeMessageContent(msg.message) as Record<string, unknown> | undefined;
+  if (!content.mediaEnvelope || direct?.[field]) return msg;
+  return { ...msg, message: { [field]: content.mediaEnvelope } } as WAMessage;
+}
+
 /** Reconstrói o conteúdo de uma mensagem já guardada, pra reenviar (encaminhar) a outra conversa. */
 function buildForwardContent(source: ChatMessageRecord, buffer: Buffer | null): AnyMessageContent {
   switch (source.type) {
@@ -188,10 +204,72 @@ export class ChatService {
   /** IDs das mensagens mandadas pelo painel (pra distinguir, no eco do WhatsApp, do que você digitou no celular). */
   private readonly panelSent = new SentMessageRegistry();
 
+  /** Número de uma marcação que era LID (identidade oculta) → JID de telefone de verdade, já resolvido. */
+  private readonly mentionPhones = new Map<string, string>();
+
   constructor(
     private readonly store: ChatStore,
     private readonly options: ChatServiceOptions
   ) {}
+
+  /**
+   * Descobre de quem são as marcações ("@150170008293498") de um texto. O WhatsApp manda a marcação
+   * só como o número interno da pessoa (LID), que não diz nada a ninguém; aqui ele vira o telefone de
+   * verdade, guardado pra `withMentionNames` trocar pelo nome sem precisar esperar.
+   */
+  async warmMentions(text: string | null | undefined): Promise<void> {
+    if (!text || !this.options.isConnected()) return;
+    for (const [, digits] of text.matchAll(MENTION_PATTERN)) {
+      if (digits) await this.resolveLid(digits);
+    }
+  }
+
+  /** Telefone de verdade por trás de um número interno (LID), guardado em `mentionPhones` pra uso sem espera. */
+  private async resolveLid(digits: string): Promise<void> {
+    if (this.mentionPhones.has(digits) || !this.options.isConnected()) return;
+    try {
+      const resolved = await this.options.getSock().signalRepository.lidMapping.getPNForLID(`${digits}@lid`);
+      if (resolved?.endsWith("@s.whatsapp.net")) this.mentionPhones.set(digits, normalizeJid(resolved));
+    } catch (err) {
+      logger.debug({ err }, "Falha ao descobrir o telefone por trás de um número interno (ignorado)");
+    }
+  }
+
+  /**
+   * Prepara os nomes de uma mensagem que acabou de chegar — chamar antes de gravá-la. Cobre as
+   * marcações do texto (ou legenda) e, nos avisos de grupo ("Fulano removeu Beltrano"), quem fez e
+   * quem sofreu a ação: o WhatsApp manda essas pessoas só pelo número interno (LID), e sem o
+   * telefone por trás dele o aviso saía como "Alguém removeu...".
+   */
+  async prepareMentions(msg: WAMessage): Promise<void> {
+    const content = normalizeMessageContent(msg.message);
+    await this.warmMentions(content?.conversation || content?.extendedTextMessage?.text || content?.imageMessage?.caption || content?.videoMessage?.caption);
+
+    if (msg.messageStubType == null) return;
+    const involved = JSON.stringify([msg.key, msg.participant, msg.messageStubParameters]);
+    for (const [, digits] of involved.matchAll(/(\d{5,20})(?::\d+)?@lid/g)) {
+      if (digits) await this.resolveLid(digits);
+    }
+  }
+
+  /**
+   * Troca cada marcação pelo que dá pra reconhecer: "@Você", o nome do WhatsApp da pessoa
+   * ("@~Fulano") ou, sem nome conhecido, o telefone dela. Marcação que não deu pra descobrir de quem
+   * é fica como veio.
+   */
+  private withMentionNames(text: string): string {
+    if (!text.includes("@")) return text;
+    return text.replace(MENTION_PATTERN, (token: string, digits: string) => {
+      const phoneJid = this.mentionPhones.get(digits);
+      const jids = [phoneJid, `${digits}@s.whatsapp.net`, `${digits}@lid`].filter((jid): jid is string => !!jid);
+      if (jids.some((jid) => this.ownJids().includes(jid))) return "@Você";
+      for (const jid of jids) {
+        const name = this.store.lastPushName(jid);
+        if (name) return `@~${name}`;
+      }
+      return phoneJid ? `@${formatPhoneForDisplay(phoneFromJid(phoneJid))}` : token;
+    });
+  }
 
   /** Mensagem recebida de alguém (privado ou grupo). */
   recordIncoming(sock: WASocket, msg: WAMessage, chatJid: string, senderJid: string, isGroup: boolean): ChatMessageRecord | null {
@@ -247,7 +325,9 @@ export class ChatService {
           isBot,
           pushName,
           type: content.type,
-          text: system ? renderSystemText(system, (jids, role) => this.displayNameFor(jids, role, msg)) : content.text,
+          text: system
+            ? renderSystemText(system, (jids, role) => this.displayNameFor(jids, role, msg))
+            : content.text && this.withMentionNames(content.text),
           mediaFile: null,
           mediaMimeType: content.mimeType,
           mediaFileName: content.fileName,
@@ -269,7 +349,7 @@ export class ChatService {
 
       // Reentrega de uma mídia que já tem arquivo (ou já está baixando): não baixa de novo
       if (DOWNLOADABLE_TYPES.has(content.type) && (inserted || !stored.mediaFile)) {
-        void this.downloadAndAttach(sock, msg, chatJid, id, content.mimeType);
+        void this.downloadAndAttach(sock, downloadableMessage(msg, content), chatJid, id, content.mimeType);
       }
 
       this.options.onMessage?.(stored, inserted);
@@ -286,7 +366,11 @@ export class ChatService {
    * junto com esta mensagem, senão o telefone — e, sem nada disso (só LID), um termo genérico.
    */
   private displayNameFor(jids: string[], role: "actor" | "target", msg: WAMessage): string {
-    const candidates = [...new Set(jids.map(normalizeJid))];
+    const known = jids.map(normalizeJid);
+    // Quem veio só pelo número interno (LID) ganha também o telefone de verdade, se já foi descoberto
+    // (ver `prepareMentions`): é pelo telefone que o histórico guarda o nome da pessoa
+    const viaLid = known.map((jid) => (jid.endsWith("@lid") ? this.mentionPhones.get(jid.split("@")[0]!.split(":")[0]!) : undefined)).filter((jid): jid is string => !!jid);
+    const candidates = [...new Set([...known, ...viaLid])];
 
     if (candidates.some((jid) => this.ownJids().includes(jid))) return role === "actor" ? "Você" : "você";
 
@@ -478,6 +562,10 @@ export class ChatService {
     this.store.setArchived(chatJid, archived);
   }
 
+  isArchived(chatJid: string): boolean {
+    return this.store.isArchived(chatJid);
+  }
+
   /** Mensagens de texto que contêm o termo buscado nesta conversa, mais recente primeiro. */
   searchMessages(chatJid: string, query: string, limit?: number): ChatMessageRecord[] {
     return this.store.searchMessages(chatJid, query, limit);
@@ -530,6 +618,22 @@ export class ChatService {
 
       return view;
     });
+  }
+
+  /**
+   * `listMessages` com as marcações trocadas pelo nome também nas mensagens antigas, gravadas quando
+   * a marcação ainda ficava só como número (as novas já são gravadas com o nome).
+   */
+  async listMessagesWithMentions(chatJid: string, opts?: { before?: number; limit?: number }): Promise<ChatMessageView[]> {
+    const views = this.listMessages(chatJid, opts);
+    for (const view of views) {
+      if (view.type === "system") continue;
+      await this.warmMentions(view.text);
+      await this.warmMentions(view.quotedPreview?.text);
+      if (view.text) view.text = this.withMentionNames(view.text);
+      if (view.quotedPreview?.text) view.quotedPreview = { ...view.quotedPreview, text: this.withMentionNames(view.quotedPreview.text) };
+    }
+    return views;
   }
 
   /** Zera o contador de não lidas (o painel chama ao abrir a conversa). */

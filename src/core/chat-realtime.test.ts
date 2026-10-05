@@ -64,6 +64,20 @@ describe("ChatRealtime", () => {
     expect(ws.sent.map((raw) => JSON.parse(raw).isNew)).toEqual([true, false]);
   });
 
+  test("sound vai junto no evento: cada conta avisa o painel se a mensagem dela toca som ou não", () => {
+    const rt = new ChatRealtime();
+    const wsA = fakeSocket();
+    const wsB = fakeSocket();
+    rt.add("acc-a", wsA as never);
+    rt.add("acc-b", wsB as never);
+
+    rt.publish("acc-a", fakeMessage(), true, false); // WhatsApp com o som desligado
+    rt.publish("acc-b", fakeMessage(), true, true); // WhatsApp com o som ligado
+
+    expect(JSON.parse(wsA.sent[0]!)).toMatchObject({ isNew: true, sound: false });
+    expect(JSON.parse(wsB.sent[0]!)).toMatchObject({ isNew: true, sound: true });
+  });
+
   test("publicar sem ninguém conectado não faz nada (nem lança erro)", () => {
     const rt = new ChatRealtime();
     expect(() => rt.publish("acc-sem-ninguem", fakeMessage())).not.toThrow();

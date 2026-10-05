@@ -24,11 +24,20 @@ Para gerar o executável autossuficiente (`dist/BotBrinzy.exe`) contendo todo o 
 bun run build
 ```
 
+O build exige o servidor de licenças configurado em `src/config/license.ts` (`serverUrl` e `publicKey`); sem isso ele se recusa a gerar o exe. Para gerar um exe sem controle de acesso, só para testar: `bun run build --sem-licenca`.
+
 O executável gerado salva todos os dados de forma persistente em `%APPDATA%\BotBrinzy` (sessão de autenticação, regras, perfis, campanhas, métricas) e arquivos temporários em `%TEMP%\BotBrinzy`.
 
 ### Controle de acesso
 
-O executável em si não tem prazo de validade: quem controla o acesso de cada cliente é o login. Pelo painel de Administração, o administrador define até quando cada usuário pode usar o sistema (`expiresAt`) e quais funcionalidades ele tem liberadas — vencido o prazo, a pessoa continua entrando normalmente, só que sem nenhuma funcionalidade liberada, até o administrador renovar o acesso ou ela resgatar uma chave de renovação.
+Quem controla o acesso de cada cliente é o **servidor de licenças** (pasta `servidor/`, ver o `LEIA-ME.md` na raiz do projeto). O exe não guarda usuário, senha, prazo nem funcionalidades: no login ele recebe do servidor uma licença assinada para aquele computador e a renova a cada 10 minutos.
+
+- Pelo painel de Administração (que repassa tudo ao servidor), o administrador define até quando cada usuário pode usar o sistema, quais funcionalidades tem liberadas e em quantos computadores pode entrar.
+- Vencido o prazo, a pessoa continua entrando, só que sem nenhuma funcionalidade liberada, até o administrador renovar ou ela resgatar uma chave de renovação.
+- Conta desativada ou computador liberado para outro: o programa desloga na renovação seguinte.
+- Sem conseguir falar com o servidor, o programa segue com a última licença pela tolerância configurada nele (24 h por padrão); depois bloqueia tudo e desliga o bot de grupo até renovar.
+
+Com `serverUrl` vazio (`bun start` em desenvolvimento) o programa roda em **modo local**: as contas ficam neste computador e a primeira conta criada vira administradora. Serve só para desenvolver.
 
 ## Várias contas de WhatsApp
 

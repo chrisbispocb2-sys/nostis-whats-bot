@@ -1,0 +1,19 @@
+{
+  "name": "brinzy-servidor-licencas",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "gerar-chaves": "bun run scripts/gerar-chaves.ts",
+    "criar-admin": "bun run scripts/criar-admin.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

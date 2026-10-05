@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { AccountManager } from "../core/account-manager";
+import { newRecord } from "../core/charge-store";
 import { fakeConnections, groupText, privateText, tempDirs, type FakeConnection } from "../testing/fakes";
 import { handleApiRequest } from ".";
 
@@ -574,6 +575,16 @@ describe("/chats/:jid/uber-trip (acompanhar corrida pelo link público)", () => 
     expect(definido.status).toBe(200);
     const { json: depois } = await api("GET", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/uber-trip`);
     expect(depois.trip).toMatchObject({ agreedAmountCents: 3500 });
+
+    // "pago" na barra de corridas: só conta cobrança paga desse cliente criada desde que a corrida começou
+    const charges = manager.get("default")!.charges;
+    const startedAt = json.trips[0].startedAt as number;
+    charges.add({ ...newRecord({ id: "antiga", kind: "charge", amountCents: 3500, description: "Corrida" }), chatJid: CLIENT, status: "paid", createdAt: startedAt - 60 * 60_000 });
+    charges.add({ ...newRecord({ id: "pendente", kind: "charge", amountCents: 3500, description: "Corrida" }), chatJid: CLIENT });
+    expect((await api("GET", "/accounts/default/chats/uber-trips")).json.trips).toMatchObject([{ chatJid: CLIENT, paid: false }]);
+
+    charges.update("pendente", { status: "paid", paidAt: Date.now() });
+    expect((await api("GET", "/accounts/default/chats/uber-trips")).json.trips).toMatchObject([{ chatJid: CLIENT, paid: true }]);
   });
 
   test("com o assistente de corrida desligado nas configurações, recusa com 409", async () => {

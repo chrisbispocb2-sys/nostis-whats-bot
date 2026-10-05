@@ -11,10 +11,10 @@ export class NotificationService {
     );
   }
 
-  public async send(title: string, body: string): Promise<void> {
+  public async send(title: string, body: string, { sound = true } = {}): Promise<void> {
     try {
       await this.notifier.start();
-      await this.notifier.show({ title, body });
+      await this.notifier.show({ title, body, sound });
     } catch (error) {
       logger.error({ error }, "Falha ao enviar notificação");
     }
@@ -25,7 +25,8 @@ export class NotificationService {
 // mesmo daemon), criada só na primeira notificação.
 let shared: NotificationService | null = null;
 
-export function sendNotification(title: string, body: string): Promise<void> {
+/** `sound: false` mostra o aviso do Windows sem tocar o som dele. */
+export function sendNotification(title: string, body: string, options: { sound?: boolean } = {}): Promise<void> {
   shared ??= new NotificationService();
-  return shared.send(title, body);
+  return shared.send(title, body, options);
 }

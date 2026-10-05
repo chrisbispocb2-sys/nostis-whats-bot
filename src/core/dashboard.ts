@@ -5,7 +5,7 @@ import { logger } from "../utils/logger";
 import { CONFIG } from "../config";
 import type { AccountManager } from "./account-manager";
 import type { Overlay } from "./overlay";
-import type { AuthService } from "./auth-service";
+import type { AuthProvider } from "./auth-provider";
 import { checkRequestOrigin, isPanelOrigin } from "./request-guard";
 import { applyFeatureGate } from "./feature-guard";
 import { ChatRealtime, type ChatSocketData } from "./chat-realtime";
@@ -15,7 +15,7 @@ export interface DashboardOptions {
   /** Quem está com o painel aberto nesta conta recebe as mensagens do chat em tempo real (WebSocket). */
   chatRealtime?: ChatRealtime;
   /** Exige login para usar o painel. Sem isto, o painel funciona livre (usado nos testes). */
-  auth?: AuthService;
+  auth?: AuthProvider;
 }
 
 const CHAT_SOCKET_PATH = /^\/accounts\/([^/]+)\/chats\/socket$/;

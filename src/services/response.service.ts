@@ -8,7 +8,7 @@ import { logger } from "../utils/logger";
 /** A conta que está respondendo: o nome vai nos avisos e o `notify` mostra a notificação no computador. */
 export interface ResponseAccount {
   name: string;
-  notify(title: string, body: string): void;
+  notify(title: string, body: string, options?: { routine?: boolean }): void;
 }
 
 export class ResponseService {
@@ -57,7 +57,8 @@ export class ResponseService {
 
       account.notify(
         `${account.name}: Mensagem Enviada`,
-        `Respondido no grupo ${groupName}: "${text}"`
+        `Respondido no grupo ${groupName}: "${text}"`,
+        { routine: true } // aviso do dia a dia: mudo se o som desta conta estiver desligado
       );
 
       logger.info(`Resposta enviada para ${groupName} (${account.name}): "${text}"`);

@@ -53,6 +53,49 @@ function makeService(options: Partial<UberTripTrackerOptions> & { openStatusFetc
 }
 
 describe("UberTripTrackerService", () => {
+  test("endereços de partida e destino: dispara onRouteKnown uma vez só, antes do aviso do marco", async () => {
+    const waypoints = [
+      { title: "Rua Um, 123", subtitle: "Centro, São Paulo", type: "PICKUP" },
+      { title: "Av. Dois, 456", subtitle: "", type: "DROPOFF" },
+    ];
+    const { fetcher } = fakeFetcher([statusResponse("ArrivingAtPickup", { eta: 90, waypoints })]);
+    const events: string[] = [];
+    const svc = makeService({
+      openStatusFetcher: async () => fetcher,
+      onRouteKnown: (_chatJid, snapshot) => {
+        events.push(`rota:${snapshot.pickupAddress} -> ${snapshot.destinationAddress}`);
+      },
+      onNearPickup: () => {
+        events.push("2min");
+      },
+    });
+
+    await svc.startTracking("chat@s.whatsapp.net", "TOKEN", 3500);
+    await wait(60);
+
+    expect(events).toEqual(["rota:Rua Um, 123, Centro, São Paulo -> Av. Dois, 456", "2min"]);
+  });
+
+  test("endereços: sem tipo reconhecido vale a ordem dos pontos; sem endereço nenhum ou já embarcado, não dispara", async () => {
+    const routes: string[] = [];
+    const onRouteKnown: UberTripTrackerOptions["onRouteKnown"] = (_chatJid, snapshot) => {
+      routes.push(`${snapshot.pickupAddress} -> ${snapshot.destinationAddress}`);
+    };
+
+    const byOrder = fakeFetcher([statusResponse("ArrivingAtPickup", { eta: 400, waypoints: [{ title: "A", type: "X" }, { title: "Parada", type: "X" }, { title: "B", type: "X" }] })]);
+    await makeService({ openStatusFetcher: async () => byOrder.fetcher, onRouteKnown }).startTracking("chat@s.whatsapp.net", "T1", null);
+    expect(routes).toEqual(["A -> B"]);
+    service!.stopAll();
+
+    const noAddress = fakeFetcher([statusResponse("ArrivingAtPickup", { eta: 400 })]);
+    await makeService({ openStatusFetcher: async () => noAddress.fetcher, onRouteKnown }).startTracking("chat@s.whatsapp.net", "T2", null);
+    service!.stopAll();
+
+    const onTrip = fakeFetcher([statusResponse("OnTrip", { waypoints: [{ title: "A", type: "PICKUP" }, { title: "B", type: "DROPOFF" }] })]);
+    await makeService({ openStatusFetcher: async () => onTrip.fetcher, onRouteKnown }).startTracking("chat@s.whatsapp.net", "T3", null);
+    expect(routes).toEqual(["A -> B"]);
+  });
+
   test("a 2 min do local de partida: dispara onNearPickup uma vez", async () => {
     const { fetcher } = fakeFetcher([statusResponse("ArrivingAtPickup", { eta: 90 })]);
     const nearPickup: string[] = [];

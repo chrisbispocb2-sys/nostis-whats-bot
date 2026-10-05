@@ -34,6 +34,9 @@ export const PATHS = {
   invites: join(APPDATA_DIR, "invites.json"),
   sessions: join(APPDATA_DIR, "sessions.json"),
   keys: join(APPDATA_DIR, "keys.json"),
+  /** A licença emitida pelo servidor de licenças pra este computador (ver core/remote-auth-service.ts). */
+  license: join(APPDATA_DIR, "license.json"),
+  deviceId: join(APPDATA_DIR, "device-id"),
 } as const;
 
 /**

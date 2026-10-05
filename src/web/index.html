@@ -96,6 +96,9 @@
           <strong>Brinzy</strong>
           <span>Automação para WhatsApp</span>
         </div>
+        <button id="sidebar-collapse" class="icon-btn icon-btn-sm ghost sidebar-collapse-btn" type="button" aria-label="Recolher a lista de grupos" title="Recolher a lista de grupos (mais espaço para o painel)">
+          <svg class="icon"><use href="#i-chevron-left"/></svg>
+        </button>
         <button id="sidebar-close" class="icon-btn only-mobile" type="button" aria-label="Fechar lista de grupos">
           <svg class="icon"><use href="#i-x"/></svg>
         </button>
@@ -153,6 +156,10 @@
     <main class="main">
       <header class="topbar">
         <button id="sidebar-open" class="icon-btn only-mobile" type="button" aria-label="Abrir lista de grupos">
+          <svg class="icon"><use href="#i-menu"/></svg>
+        </button>
+
+        <button id="sidebar-expand" class="icon-btn sidebar-expand-btn" type="button" aria-label="Mostrar a lista de grupos" title="Mostrar a lista de grupos">
           <svg class="icon"><use href="#i-menu"/></svg>
         </button>
 
@@ -317,6 +324,7 @@
       <!-- Conversas -->
       <section id="chat-panel" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-chat">
         <div id="chat-layout" class="chat-layout">
+          <nav id="chat-rides" class="chat-rides hidden" aria-label="Corridas em acompanhamento"></nav>
           <aside class="chat-list-pane">
             <div class="chat-list-head">
               <button id="chat-nav-back" class="icon-btn hidden" type="button" aria-label="Voltar para as conversas">
@@ -340,7 +348,6 @@
               <svg class="icon"><use href="#i-search"/></svg>
               <input id="chat-list-search-input" class="input" type="search" placeholder="Pesquisar por nome ou número" autocomplete="off" spellcheck="false">
             </label>
-            <div id="chat-rides" class="chat-rides hidden"></div>
             <ul id="chat-list" class="chat-list"></ul>
             <ul id="chat-archived-list" class="chat-list hidden"></ul>
             <ul id="chat-folder-list" class="chat-list hidden"></ul>
@@ -531,6 +538,9 @@
     <button id="chat-lightbox-close" class="icon-btn chat-lightbox-close" type="button" aria-label="Fechar">
       <svg class="icon"><use href="#i-x"/></svg>
     </button>
+    <a id="chat-lightbox-download" class="icon-btn chat-lightbox-download" href="" download="imagem" title="Baixar imagem" aria-label="Baixar imagem">
+      <svg class="icon"><use href="#i-download"/></svg>
+    </a>
     <img id="chat-lightbox-img" alt="">
   </div>
 
@@ -799,6 +809,14 @@
               <span class="switch"><input id="ride-vehicle-details" type="checkbox"><span class="switch-track"></span></span>
             </label>
 
+            <div class="field">
+              <div class="label-row">
+                <label for="ride-msg-route">Conferir endereços (ao mandar o link)</label>
+                <button type="button" class="btn btn-ghost btn-sm" data-ride-message-reset="rideRouteMessage">Restaurar padrão</button>
+              </div>
+              <textarea id="ride-msg-route" class="input" rows="3" maxlength="300" data-ride-message="rideRouteMessage"></textarea>
+              <p class="hint">Os endereços de partida e destino lidos do link da corrida vão sozinhos, logo acima deste texto.</p>
+            </div>
             <div class="field">
               <div class="label-row">
                 <label for="ride-msg-near2">Motorista a 2 minutos</label>
@@ -1140,7 +1158,7 @@
         <label class="option">
           <span class="option-text">
             <strong>Som de mensagem nova</strong>
-            <small>Toca um bip no painel sempre que chegar uma mensagem de alguém.</small>
+            <small>Toca um bip sempre que chegar uma mensagem de alguém neste WhatsApp — mesmo com a janela do painel minimizada ou fechada.</small>
           </span>
           <span class="switch"><input id="settings-notification-sound" type="checkbox"><span class="switch-track"></span></span>
         </label>

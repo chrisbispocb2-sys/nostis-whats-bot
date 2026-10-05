@@ -1742,6 +1742,19 @@ img.camp-thumb {
 
 .only-mobile { display: none; }
 
+/* Lista de grupos recolhida (telas largas): some da tela e o painel ocupa o espaço dela */
+.sidebar-collapse-btn { margin-left: auto; flex-shrink: 0; }
+.sidebar-expand-btn { display: none; }
+@media (min-width: 901px) {
+  .layout.sidebar-collapsed { grid-template-columns: var(--rail-width) minmax(0, 1fr); }
+  .layout.sidebar-collapsed .sidebar,
+  .layout.sidebar-collapsed .panel-resizer { display: none; }
+  .layout.sidebar-collapsed .sidebar-expand-btn { display: inline-grid; }
+}
+@media (max-width: 900px) {
+  .sidebar-collapse-btn { display: none; } /* em tela estreita a lista já é uma gaveta com botão de fechar */
+}
+
 @media (max-width: 1100px) {
   .main { padding: 22px 22px 18px; }
   .topbar-title p { display: none; }
@@ -1942,33 +1955,121 @@ li:hover .chat-list-item-menu-btn, .chat-list-item-menu-btn.is-open { display: i
 .chat-ride-detail:empty { display: none; }
 .chat-ride-bar .btn { flex-shrink: 0; }
 
-/* Corridas em andamento (todas as conversas), acima da lista de conversas */
+/* Corridas a caminho (todas as conversas): barra estreita à esquerda da lista, só com uma bolinha
+   por corrida. O painel de dentro abre por cima da lista ao passar o mouse (ou focar pelo teclado),
+   sem empurrar o resto da tela. */
 .chat-rides {
-  display: flex; flex-direction: column; gap: 2px;
-  margin: 0 12px 8px;
+  --rides-collapsed: 52px;
+  position: relative; z-index: 6;
+  flex-shrink: 0;
+  width: var(--rides-collapsed);
+  margin-right: 8px;
+}
+.chat-rides-panel {
+  position: absolute; top: 0; bottom: 0; left: 0;
+  display: flex; flex-direction: column; gap: 4px;
+  width: var(--rides-collapsed);
   padding: 6px;
+  background: var(--surface-1);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--info-soft);
-  flex-shrink: 0;
-  max-height: 200px; overflow-y: auto;
+  overflow: hidden;
+  transition: width .18s var(--ease), box-shadow .18s, border-color .18s;
+}
+.chat-rides:hover .chat-rides-panel,
+.chat-rides:focus-within .chat-rides-panel {
+  width: 280px;
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-lg);
+  transition-delay: .12s; /* passar o mouse de raspão a caminho da lista não abre */
 }
 .chat-rides-head {
-  display: flex; align-items: center; gap: 8px;
-  padding: 2px 6px 4px;
+  display: flex; align-items: center; gap: 10px;
+  flex-shrink: 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
   font-size: 12px; font-weight: 600; color: var(--text-muted);
+  white-space: nowrap;
 }
-.chat-rides-head .chat-nav-count { margin-left: auto; }
+.chat-rides-head .chat-ride-chip { color: var(--text-muted); background: transparent; border-color: transparent; }
+.chat-rides-head-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chat-rides-head .chat-nav-count { flex-shrink: 0; margin-right: 6px; }
+.chat-rides-items {
+  display: flex; flex-direction: column; gap: 4px;
+  flex: 1; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  scrollbar-width: none;
+}
+.chat-rides-items::-webkit-scrollbar { display: none; }
+.chat-ride-item { position: relative; flex-shrink: 0; }
+/* A linha inteira é o link da corrida na Uber; o botão por cima, à direita, abre a conversa */
 .chat-ride-row {
-  display: flex; flex-direction: column; gap: 1px;
-  width: 100%; padding: 6px 8px;
-  border: 0; border-radius: var(--radius-sm);
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 0;
+  border: 0; border-radius: 999px;
   background: transparent; color: var(--text);
-  font: inherit; text-align: left; cursor: pointer;
+  font: inherit; text-align: left; text-decoration: none; cursor: pointer;
+  outline: none;
 }
-.chat-ride-row:hover, .chat-ride-row.is-active { background: var(--surface-3); }
+.chat-ride-chat-btn {
+  position: absolute; top: 50%; right: 4px;
+  width: 30px; height: 30px;
+  transform: translateY(-50%);
+  opacity: 0; pointer-events: none;
+  transition: opacity .15s;
+}
+/* Só com a barra aberta (mesmo atraso da abertura): recolhida, ficaria por cima da bolinha */
+.chat-rides:hover .chat-ride-chat-btn,
+.chat-rides:focus-within .chat-ride-chat-btn { opacity: 1; pointer-events: auto; transition-delay: .18s; }
+.chat-ride-row:hover, .chat-ride-row:focus-visible { background: var(--surface-3); }
+.chat-ride-row.is-active .chat-ride-chip { box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--primary); }
+/* A bolinha: azul = ainda não embarcou, amarela = embarcou mas falta pagar, verde = pago (só falta a corrida terminar) */
+.chat-ride-chip {
+  display: grid; place-items: center;
+  width: 38px; height: 38px;
+  flex-shrink: 0;
+  font-size: 12px; font-weight: 700; color: var(--info);
+  background: var(--info-soft);
+  border: 1px solid var(--info);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.chat-ride-chip .icon { width: 17px; height: 17px; }
+.chat-ride-row[data-stage="unpaid"] .chat-ride-chip { color: var(--warning); background: var(--warning-soft); border-color: var(--warning); }
+.chat-ride-row[data-stage="paid"] .chat-ride-chip { color: var(--success); background: var(--success-soft); border-color: var(--success); }
+/* Pagou antes mesmo de embarcar: continua azul (ainda falta o embarque), com um pontinho verde no canto */
+.chat-ride-row[data-stage="waiting"].is-paid .chat-ride-chip { position: relative; }
+.chat-ride-row[data-stage="waiting"].is-paid .chat-ride-chip::after {
+  content: "";
+  position: absolute; right: -2px; bottom: -2px;
+  width: 11px; height: 11px;
+  background: var(--success);
+  border: 2px solid var(--surface-1);
+  border-radius: 50%;
+}
+/* Legenda das cores: só com a barra aberta */
+.chat-rides-legend {
+  display: flex; flex-direction: column; gap: 4px;
+  flex-shrink: 0;
+  padding: 8px 6px 2px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px; color: var(--text-dim);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity .15s;
+}
+.chat-rides:hover .chat-rides-legend,
+.chat-rides:focus-within .chat-rides-legend { opacity: 1; transition-delay: .18s; }
+.chat-rides-legend span { display: flex; align-items: center; gap: 8px; }
+.chat-rides-legend span::before { content: ""; width: 9px; height: 9px; flex-shrink: 0; border-radius: 50%; background: var(--info); }
+.chat-rides-legend span[data-stage="unpaid"]::before { background: var(--warning); }
+.chat-rides-legend span[data-stage="paid"]::before { background: var(--success); }
+.chat-ride-row-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; padding-right: 40px; }
 .chat-ride-row-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-ride-row-status { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) {
+  .chat-rides-panel { transition: none; }
+}
 
 .ride-messages-title { margin: 8px 0 0; font-size: 14px; }
 
@@ -2252,6 +2353,13 @@ textarea.chat-input-textarea {
   background: rgba(255, 255, 255, .1);
 }
 .chat-lightbox-close:hover { background: rgba(255, 255, 255, .2); }
+.chat-lightbox-download {
+  position: fixed; top: 18px; right: 74px;
+  width: 42px; height: 42px;
+  color: #fff;
+  background: rgba(255, 255, 255, .1);
+}
+.chat-lightbox-download:hover { background: rgba(255, 255, 255, .2); color: #fff; }
 
 .forward-list { margin-top: 14px; max-height: 340px; overflow-y: auto; }
 .forward-list .stack-item { cursor: pointer; }
@@ -2265,6 +2373,26 @@ textarea.chat-input-textarea {
   margin-bottom: 4px;
 }
 .chat-bubble-image { cursor: pointer; }
+/* Botão de baixar por cima da foto: aparece ao passar o mouse (sempre visível em telas de toque) */
+.chat-bubble-image-wrap { position: relative; display: block; width: fit-content; max-width: 100%; }
+.chat-bubble-download-btn {
+  position: absolute; top: 8px; right: 8px;
+  display: grid; place-items: center;
+  width: 32px; height: 32px;
+  padding: 0;
+  color: #fff;
+  background: rgba(5, 3, 10, .62);
+  border: 0; border-radius: 50%;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s, background .15s;
+}
+.chat-bubble-download-btn .icon { width: 16px; height: 16px; }
+.chat-bubble-image-wrap:hover .chat-bubble-download-btn, .chat-bubble-download-btn:focus-visible { opacity: 1; }
+.chat-bubble-download-btn:hover { background: rgba(5, 3, 10, .85); }
+@media (hover: none) {
+  .chat-bubble-download-btn { opacity: 1; }
+}
 .chat-bubble-audio { display: block; width: min(280px, 60vw); margin-bottom: 2px; }
 .chat-bubble-doc {
   display: flex; align-items: center; gap: 8px;
@@ -2486,7 +2614,8 @@ textarea.chat-input-textarea {
 }
 
 @media (max-width: 900px) {
-  .chat-layout.is-showing-thread .chat-list-pane { display: none; }
+  .chat-layout.is-showing-thread .chat-list-pane,
+  .chat-layout.is-showing-thread .chat-rides { display: none; }
   .chat-layout.is-showing-thread .chat-list-resizer { display: none; }
   .chat-layout:not(.is-showing-thread) .chat-thread-pane { display: none; }
   .chat-list-pane { width: 100% !important; }

@@ -75,6 +75,7 @@ export async function handleChatRoutes(req: Request, url: URL, account: Account)
     const trips = await Promise.all(
       account.uberTrips.list().map(async (trip) => ({
         ...trip,
+        paid: account.isRidePaid(trip.chatJid, trip.paymentSince),
         phone: await resolvePhone(account, trip.chatJid),
         name: account.conversations.find(trip.chatJid)?.name ?? null,
       }))
@@ -327,7 +328,7 @@ export async function handleChatRoutes(req: Request, url: URL, account: Account)
     const chatJid = decodeURIComponent(messagesMatch[1]!);
     const before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
     const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : undefined;
-    return Response.json({ messages: chats.listMessages(chatJid, { before, limit }) });
+    return Response.json({ messages: await chats.listMessagesWithMentions(chatJid, { before, limit }) });
   }
 
   if (messagesMatch && req.method === "POST") {

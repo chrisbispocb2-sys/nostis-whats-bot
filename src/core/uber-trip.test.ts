@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { crossedPhases, describeRide, extractChamaAmountCents, extractUberShareToken, nextUberTripPhase, parseUberStatusResponse, phaseTrigger, type UberTripSnapshot } from "./uber-trip";
+import { crossedPhases, describeRide, describeRoute, extractChamaAmountCents, extractUberShareToken, nextUberTripPhase, parseUberStatusResponse, phaseTrigger, type UberTripSnapshot } from "./uber-trip";
 
 function snapshot(overrides: Partial<UberTripSnapshot> = {}): UberTripSnapshot {
   return {
@@ -10,6 +10,8 @@ function snapshot(overrides: Partial<UberTripSnapshot> = {}): UberTripSnapshot {
     driverName: null,
     vehiclePlate: null,
     vehicleDescription: null,
+    pickupAddress: null,
+    destinationAddress: null,
     tripExists: true,
     ...overrides,
   };
@@ -105,8 +107,36 @@ describe("parseUberStatusResponse", () => {
       driverName: "EVERTON",
       vehiclePlate: "QPQ8I33",
       vehicleDescription: "Cinza Nissan Versa",
+      pickupAddress: null,
+      destinationAddress: null,
       tripExists: true,
     });
+  });
+
+  test("endereços de partida e destino (waypoints): pelo tipo do ponto, ou pela ordem quando o tipo não é reconhecido", () => {
+    const withWaypoints = (waypoints: unknown) => parseUberStatusResponse({ data: { status: { trips: [{ clientStatus: "ArrivingAtPickup", waypoints }] } } });
+
+    // tipo reconhecido, mesmo fora de ordem; subtítulo entra junto, sem repetir o que já está no título
+    expect(
+      withWaypoints([
+        { title: "Av. Dois, 456", subtitle: "Av. Dois", type: "DROPOFF" },
+        { title: "Rua Um, 123", subtitle: "Centro", type: "PICKUP" },
+      ])
+    ).toMatchObject({ pickupAddress: "Rua Um, 123, Centro", destinationAddress: "Av. Dois, 456" });
+
+    // tipo desconhecido: primeiro = partida, último = destino (parada no meio fica de fora)
+    expect(withWaypoints([{ title: "A" }, { title: "Parada" }, { title: "B" }])).toMatchObject({ pickupAddress: "A", destinationAddress: "B" });
+
+    // um ponto só, sem tipo reconhecido: não dá pra saber qual é
+    expect(withWaypoints([{ title: "A" }])).toMatchObject({ pickupAddress: null, destinationAddress: null });
+    expect(withWaypoints([{ title: "B", type: "DESTINATION" }])).toMatchObject({ pickupAddress: null, destinationAddress: "B" });
+    expect(withWaypoints(null)).toMatchObject({ pickupAddress: null, destinationAddress: null });
+  });
+
+  test("describeRoute: linhas de partida e destino pro cliente conferir; null sem endereço nenhum", () => {
+    expect(describeRoute(snapshot({ pickupAddress: "Rua Um, 123", destinationAddress: "Av. Dois, 456" }))).toBe("📍 *Partida:* Rua Um, 123\n🏁 *Destino:* Av. Dois, 456");
+    expect(describeRoute(snapshot({ destinationAddress: "Av. Dois, 456" }))).toBe("🏁 *Destino:* Av. Dois, 456");
+    expect(describeRoute(snapshot())).toBeNull();
   });
 
   test("lê uma resposta de 'OnTrip' (já embarcou, a caminho do destino)", () => {

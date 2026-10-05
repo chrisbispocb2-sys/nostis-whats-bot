@@ -49,8 +49,8 @@ function normalizeUsername(username: string): string {
   return username.trim().toLowerCase();
 }
 
-export function toPublicUser(user: User): PublicUser {
-  const { passwordHash: _passwordHash, ...rest } = user;
+export function toPublicUser(user: User | PublicUser): PublicUser {
+  const { passwordHash: _passwordHash, ...rest } = user as User;
   return rest;
 }
 

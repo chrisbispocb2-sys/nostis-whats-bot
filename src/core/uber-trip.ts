@@ -19,6 +19,7 @@ export const UBER_STATUS_QUERY = `query GetStatusMini($share: InputShare) {
       statusMessage { title detailMode }
       driver { name rating }
       vehicle { licensePlate make model colorTranslatedName }
+      waypoints { title subtitle type }
     }
   }
 }`;
@@ -65,8 +66,32 @@ export interface UberTripSnapshot {
   driverName: string | null;
   vehiclePlate: string | null;
   vehicleDescription: string | null;
+  /** Endereço de partida e de destino da corrida, como a Uber mostra no link (null = não informado). */
+  pickupAddress: string | null;
+  destinationAddress: string | null;
   /** false quando a viagem já não aparece mais na resposta (cancelada ou concluída). */
   tripExists: boolean;
+}
+
+/** Endereço de um ponto da corrida numa linha só ("Rua Um, 123, Centro"). */
+function waypointAddress(waypoint: Record<string, unknown> | undefined): string | null {
+  const title = typeof waypoint?.["title"] === "string" ? waypoint["title"].trim() : "";
+  const subtitle = typeof waypoint?.["subtitle"] === "string" ? waypoint["subtitle"].trim() : "";
+  if (title && subtitle && !title.includes(subtitle)) return `${title}, ${subtitle}`;
+  return title || subtitle || null;
+}
+
+/**
+ * Partida e destino entre os pontos da corrida. O `type` de cada ponto diz qual é qual; como os
+ * valores dele não são documentados, sem um tipo reconhecido vale a ordem (o primeiro é a partida,
+ * o último é o destino — paradas no meio do caminho ficam de fora).
+ */
+function routeAddresses(waypoints: unknown): { pickupAddress: string | null; destinationAddress: string | null } {
+  const points = Array.isArray(waypoints) ? (waypoints.filter((w) => w && typeof w === "object") as Array<Record<string, unknown>>) : [];
+  const typeOf = (point: Record<string, unknown>) => String(point["type"] ?? "");
+  const pickup = points.find((p) => /pick|origin/i.test(typeOf(p))) ?? (points.length >= 2 ? points[0] : undefined);
+  const destination = points.findLast((p) => p !== pickup && /drop|dest/i.test(typeOf(p))) ?? (points.length >= 2 ? points[points.length - 1] : undefined);
+  return { pickupAddress: waypointAddress(pickup), destinationAddress: destination === pickup ? null : waypointAddress(destination) };
 }
 
 /** Lê a resposta crua do GetStatusMini. Devolve null se o formato não bate com o esperado (link inválido/expirado, erro da API, etc). */
@@ -87,6 +112,8 @@ export function parseUberStatusResponse(raw: unknown): UberTripSnapshot | null {
       driverName: null,
       vehiclePlate: null,
       vehicleDescription: null,
+      pickupAddress: null,
+      destinationAddress: null,
       tripExists: false,
     };
   }
@@ -105,8 +132,21 @@ export function parseUberStatusResponse(raw: unknown): UberTripSnapshot | null {
     vehicleDescription: vehicle
       ? [vehicle["colorTranslatedName"], vehicle["make"], vehicle["model"]].filter(Boolean).join(" ")
       : null,
+    ...routeAddresses(trip["waypoints"]),
     tripExists: true,
   };
+}
+
+/**
+ * Partida e destino em linhas prontas pra mandar ao cliente conferir. Null se a Uber não informou
+ * nenhum dos dois.
+ */
+export function describeRoute(snapshot: UberTripSnapshot): string | null {
+  const lines = [
+    snapshot.pickupAddress ? `📍 *Partida:* ${snapshot.pickupAddress}` : null,
+    snapshot.destinationAddress ? `🏁 *Destino:* ${snapshot.destinationAddress}` : null,
+  ].filter(Boolean);
+  return lines.length ? lines.join("\n") : null;
 }
 
 /**
