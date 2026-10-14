@@ -24,7 +24,7 @@ Para gerar o executável autossuficiente (`dist/BotBrinzy.exe`) contendo todo o 
 bun run build
 ```
 
-O build exige o servidor de licenças configurado em `src/config/license.ts` (`serverUrl` e `publicKey`); sem isso ele se recusa a gerar o exe. Para gerar um exe sem controle de acesso, só para testar: `bun run build --sem-licenca`.
+Sem o servidor de licenças configurado em `src/config/license.ts` (`serverUrl` e `publicKey`), o exe sai em **modo local** e o build avisa isso no final: quem abrir esse exe cria a própria conta de administrador, sem controle de acesso. Configure o servidor antes de gerar um exe para entregar a clientes.
 
 O executável gerado salva todos os dados de forma persistente em `%APPDATA%\BotBrinzy` (sessão de autenticação, regras, perfis, campanhas, métricas) e arquivos temporários em `%TEMP%\BotBrinzy`.
 

@@ -44,6 +44,8 @@ export interface ConnectionOptions {
   onGroups(groups: GroupInfo[]): void;
   /** O WhatsApp avisou que uma mensagem enviada mudou de status (entregue, lida...). */
   onMessageUpdate?(key: WAMessageKey, status: number | null | undefined): void;
+  /** Uma mensagem foi EDITADA (o WhatsApp entrega a edição por aqui, não como mensagem nova). */
+  onMessageEdit?(key: WAMessageKey, message: WAMessage["message"]): void;
 }
 
 export type ConnectionFactory = (options: ConnectionOptions) => Connection;
@@ -190,11 +192,13 @@ export class WhatsAppConnection implements Connection {
       sock.ev.on("messages.update", (updates) => {
         if (generation !== this.generation) return;
         for (const { key, update } of updates) {
-          if (update.status == null) continue;
           try {
-            this.options.onMessageUpdate?.(key, update.status);
+            // Edição de mensagem: o WhatsApp a entrega aqui (com o novo conteúdo em `update.message`),
+            // não como mensagem nova. Sem tratar isto, a edição nunca aparecia no painel.
+            if (update.message) this.options.onMessageEdit?.(key, update.message);
+            if (update.status != null) this.options.onMessageUpdate?.(key, update.status);
           } catch (err) {
-            logger.error({ err, account: this.options.label() }, "Erro ao processar status de mensagem");
+            logger.error({ err, account: this.options.label() }, "Erro ao processar atualização de mensagem");
           }
         }
       });

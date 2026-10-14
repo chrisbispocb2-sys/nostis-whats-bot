@@ -123,6 +123,52 @@ describe("GET /groups/metadata/:jid", () => {
   });
 });
 
+describe("descrição do grupo", () => {
+  const ME = { id: "5511900000000@s.whatsapp.net", phoneNumber: "5511900000000@s.whatsapp.net", notify: "Você" };
+
+  test("canEditInfo: admin sempre pode; membro comum só se o grupo não trava a edição pra admins; quem não está no grupo, nunca", async () => {
+    const metadata = (admin: "admin" | null, restrict: boolean, participants = [{ ...ME, admin }]) =>
+      (connection.sock.groupMetadata = async () => ({ id: GROUP, subject: "Grupo", owner: undefined, restrict, participants }) as never);
+    const canEdit = async () => (await api("GET", `/accounts/default/groups/metadata/${encodeURIComponent(GROUP)}`)).json.canEditInfo;
+
+    metadata("admin", true);
+    expect(await canEdit()).toBe(true);
+    metadata(null, true);
+    expect(await canEdit()).toBe(false);
+    metadata(null, false);
+    expect(await canEdit()).toBe(true);
+    metadata(null, false, []);
+    expect(await canEdit()).toBe(false);
+  });
+
+  test("PUT muda a descrição no WhatsApp; vazia apaga; texto que não é texto ou longo demais é recusado", async () => {
+    const path = `/accounts/default/groups/${encodeURIComponent(GROUP)}/description`;
+
+    expect(await api("PUT", path, { description: "  Regras novas\nSem spam  " })).toMatchObject({ status: 200, json: { description: "Regras novas\nSem spam" } });
+    expect(await api("PUT", path, { description: "   " })).toMatchObject({ status: 200, json: { description: null } });
+    expect(connection.sock.descriptionUpdates).toEqual([
+      { jid: GROUP, description: "Regras novas\nSem spam" },
+      { jid: GROUP, description: undefined },
+    ]);
+
+    expect((await api("PUT", path, {})).status).toBe(400);
+    expect((await api("PUT", path, { description: "x".repeat(2049) })).status).toBe(400);
+    expect(connection.sock.descriptionUpdates.length).toBe(2);
+  });
+
+  test("WhatsApp recusa (sem permissão) ou conta desconectada: erro claro em vez de fingir que salvou", async () => {
+    const path = `/accounts/default/groups/${encodeURIComponent(GROUP)}/description`;
+
+    connection.sock.descriptionUpdateFails = true;
+    const refused = await api("PUT", path, { description: "Tentativa" });
+    expect(refused.status).toBe(502);
+    expect(refused.json.error).toContain("permissão");
+
+    connection.connected = false;
+    expect((await api("PUT", path, { description: "Tentativa" })).status).toBe(503);
+  });
+});
+
 describe("POST /groups/:jid/participants/:participantJid", () => {
   const BRUNO = "5511977770000@s.whatsapp.net";
 

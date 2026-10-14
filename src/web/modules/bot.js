@@ -156,6 +156,24 @@ function noticeAutoShutdown(accountId, lastShutdown) {
   });
 }
 
+const botConflictNoticed = new Map(); // conta → horário do último aviso de "outra pessoa já está com o bot ligado"
+
+/**
+ * O bot daqui foi desligado sozinho porque outra pessoa que atende neste mesmo WhatsApp (em outro
+ * computador) já estava com o dela ligado: avisa uma vez, dizendo quem.
+ */
+function noticeBotConflict(accountId, conflict) {
+  if (!conflict || botConflictNoticed.get(accountId) === conflict.at) return;
+  botConflictNoticed.set(accountId, conflict.at);
+  if (Date.now() - conflict.at > SHUTDOWN_NOTICE_WINDOW_MS) return;
+
+  const account = state.accounts.find((a) => a.id === accountId);
+  notify.warning(`${conflict.who} já está com o bot ligado neste WhatsApp. Só um pode ficar ligado por vez, então o daqui foi desligado.`, {
+    title: account ? `${account.name}: bot desligado` : "Bot desligado",
+    duration: 15000,
+  });
+}
+
 /** Ao trocar de conta: esquece o que sabia da anterior e mostra "carregando" até chegar o da nova. */
 export function resetBotStatus() {
   botActive = null;
@@ -177,7 +195,7 @@ export function resetBotStatus() {
 export async function refreshStatus() {
   const accountId = state.activeAccountId;
   try {
-    const { active, whatsappConnected, needsQr, guard: guardStatus, away: awayStatus } = await api("/status");
+    const { active, whatsappConnected, needsQr, guard: guardStatus, away: awayStatus, botConflict } = await api("/status");
 
     if (offline) {
       offline = false;
@@ -201,6 +219,7 @@ export async function refreshStatus() {
     paintGuard();
     paintAway();
     noticeAutoShutdown(accountId, guardStatus.lastShutdown);
+    noticeBotConflict(accountId, botConflict);
   } catch (err) {
     console.error("refreshStatus falhou:", err);
     if (!offline) {
@@ -230,7 +249,8 @@ export function initBotControls() {
         notify.info("O bot parou de responder até você ligar de novo.", { title: "Bot desligado" });
       }
     } catch (err) {
-      notify.error(err.message);
+      // `holder` vem quando outra pessoa que atende neste WhatsApp já está com o bot ligado
+      notify.error(err.message, err.holder ? { title: "Bot já ligado em outro computador", duration: 12000 } : undefined);
     } finally {
       requestInFlight = false;
       refreshStatus();

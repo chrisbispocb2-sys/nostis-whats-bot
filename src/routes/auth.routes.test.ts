@@ -45,7 +45,8 @@ function cookieHeaderFrom(setCookie: string | null): string {
 
 test("status: antes de qualquer usuário, pede bootstrap", async () => {
   const res = await call("GET", "/auth/status");
-  expect(res.json).toEqual({ authenticated: false, bootstrapNeeded: true, user: null, license: null });
+  expect(res.json).toMatchObject({ authenticated: false, bootstrapNeeded: true, user: null, license: null, update: null });
+  expect(typeof res.json.appVersion).toBe("string");
 });
 
 test("bootstrap cria o primeiro admin e já loga (cookie volta pronto)", async () => {

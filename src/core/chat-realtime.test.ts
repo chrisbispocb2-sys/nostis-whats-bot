@@ -27,6 +27,7 @@ function fakeMessage(overrides: Partial<ChatMessageRecord> = {}): ChatMessageRec
     reactionEmoji: null,
     reactionTargetId: null,
     status: null,
+    edited: false,
     timestamp: Date.now(),
     createdAt: Date.now(),
     ...overrides,

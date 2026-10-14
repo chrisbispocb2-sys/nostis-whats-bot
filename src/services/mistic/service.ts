@@ -13,11 +13,16 @@ import {
   MisticError,
   PIX_KEY_TYPES,
   type MisticCredentials,
+  type MisticGateway,
   type MisticUserInfo,
   type PixKeyType,
   type Statement,
 } from "./client";
+
+/** O servidor de licenças no papel de "banco" do funcionário de empresa (ver core/auth-provider.ts). */
+export type RemoteMoney = MoneyBackend;
 import { sharedCheckLimiter, type RateLimiter } from "./rate-limiter";
+import type { MoneyBackend } from "../../core/auth-provider";
 
 /** Como o serviço manda mensagens ao cliente (quem implementa cuida de registrar o ID como "enviada pelo bot"). */
 export interface MisticSender {
@@ -90,6 +95,12 @@ export interface MisticDeps {
   baseUrl?: string;
   limiter?: RateLimiter;
   timing?: MisticTiming;
+  /**
+   * Funcionário de empresa: quando `isEmployee()` é true, cobrar/conferir/sacar passa por aqui (o
+   * servidor de licenças, que tem as credenciais do líder e faz o split) em vez de falar direto com a
+   * MisticPay. Ausente (ou `isEmployee()` false) = usa a MisticPay local, como sempre.
+   */
+  remoteMoney?: RemoteMoney;
 }
 
 export interface CreateChargeInput {
@@ -122,6 +133,11 @@ export interface WithdrawRequest {
 
 const MAX_THANKS_ATTEMPTS = 8;
 const DUPLICATE_WITHDRAW_WINDOW_MS = 30_000;
+/** Só avisa que a MisticPay recusou o login depois de tantas falhas seguidas — um 401 isolado costuma ser passageiro. */
+const AUTH_FAILURES_BEFORE_WARNING = 3;
+/** Espera depois de um login recusado: cresce (2, 4, 8… min) até este teto, e aí segue tentando devagar — sem precisar reiniciar. */
+const AUTH_BACKOFF_BASE_MS = 2 * MINUTE;
+const AUTH_BACKOFF_MAX_MS = 30 * MINUTE;
 
 function validation(message: string): MisticError {
   return new MisticError(message, "validation");
@@ -172,8 +188,12 @@ export class MisticService {
   private readonly timing: MisticTiming;
   private timer?: ReturnType<typeof setInterval>;
   private ticking = false;
-  /** Versão das credenciais em que a MisticPay recusou o login (só tenta de novo se mudarem). */
-  private authFailedVersion: number | null = null;
+  /** Logins recusados pela MisticPay em sequência (zera a cada consulta que dá certo ou quando as credenciais mudam). */
+  private authFailures = 0;
+  /** Até quando esperar depois de um login recusado (cresce a cada falha; um 401 passageiro se resolve sozinho). */
+  private authBackoffUntil = 0;
+  /** Versão das credenciais já vista: quando você troca o Client ID/Secret, recomeça na hora, sem esperar o backoff. */
+  private lastCredentialsVersion = -1;
   private backoffUntil = 0;
   private readonly inflightWithdraws = new Set<string>();
 
@@ -181,6 +201,19 @@ export class MisticService {
     this.client = new MisticClient(() => deps.store.get(), deps.fetch, deps.baseUrl);
     this.limiter = deps.limiter ?? sharedCheckLimiter;
     this.timing = deps.timing ?? DEFAULT_TIMING;
+  }
+
+  /** A conta logada agora é funcionário de empresa? (então o dinheiro passa pelo servidor do líder). */
+  private isEmployee(): boolean {
+    return !!this.deps.remoteMoney?.isEmployee();
+  }
+
+  /**
+   * Por onde falar com a MisticPay: o servidor do líder (funcionário de empresa) ou a MisticPay local.
+   * O resto do serviço (acompanhar pagamento, agradecer, histórico local) é igual nos dois casos.
+   */
+  private gateway(): MisticGateway {
+    return this.isEmployee() ? this.deps.remoteMoney! : this.client;
   }
 
   /** Começa a acompanhar pagamentos pendentes (inclusive os de antes de o programa ser reiniciado). */
@@ -201,12 +234,16 @@ export class MisticService {
   /* ---------- Conta ---------- */
 
   private assertCredentials(): void {
+    // Funcionário de empresa não tem credenciais locais: quem as tem é o servidor do líder. Se o líder
+    // ainda não configurou, o próprio servidor recusa a cobrança (com uma mensagem clara).
+    if (this.isEmployee()) return;
     if (!this.deps.store.hasCredentials()) {
       throw new MisticError("Preencha o Client ID e o Client Secret da MisticPay nas configurações.", "not_configured");
     }
   }
 
   private assertConfigured(): void {
+    if (this.isEmployee()) return; // empresa: a MisticPay fica sempre disponível pelo servidor do líder
     this.assertCredentials();
     if (!this.deps.store.get().enabled) {
       throw new MisticError("A integração com a MisticPay está desligada. Ligue-a nas configurações.", "not_configured");
@@ -215,7 +252,7 @@ export class MisticService {
 
   async accountInfo(): Promise<MisticUserInfo> {
     this.assertCredentials();
-    return this.client.getUserInfo();
+    return this.gateway().getUserInfo();
   }
 
   /** Testa credenciais (as informadas agora, completando com as salvas) sem salvar nada. */
@@ -231,7 +268,7 @@ export class MisticService {
 
   async statement(page: number, status?: string): Promise<Statement> {
     this.assertCredentials();
-    return this.client.listTransactions(page, status);
+    return this.gateway().listTransactions(page, status);
   }
 
   /* ---------- Cobrança ---------- */
@@ -294,7 +331,7 @@ export class MisticService {
     const payerName = (input.payerName?.trim() || target.name || "Cliente").slice(0, 80);
     const record = newRecord({ id: randomUUID(), kind: "charge", amountCents: cents, description });
 
-    const result = await this.client.createDeposit({
+    const result = await this.gateway().createDeposit({
       amount: centsToReais(cents),
       payerName,
       payerDocument: document,
@@ -419,6 +456,9 @@ export class MisticService {
         throw new MisticError("Muitas consultas à MisticPay em pouco tempo. Aguarde alguns segundos.", "rate_limit");
       }
       await this.checkRecord(record);
+      // Consulta manual deu certo: as credenciais estão boas, libera o acompanhamento automático na hora
+      this.authFailures = 0;
+      this.authBackoffUntil = 0;
     }
     return this.deps.charges.get(id)!;
   }
@@ -431,7 +471,7 @@ export class MisticService {
     let result;
     for (const [index, transactionId] of ids.entries()) {
       try {
-        result = await this.client.checkTransaction(transactionId);
+        result = await this.gateway().checkTransaction(transactionId);
         break;
       } catch (err) {
         const notFound = err instanceof MisticError && err.code === "api" && err.status === 404;
@@ -502,8 +542,13 @@ export class MisticService {
       }
 
       if (!this.deps.store.hasCredentials()) return;
-      if (this.authFailedVersion === this.deps.store.credentialsVersion) return;
-      if (now < this.backoffUntil) return;
+      // Trocou as credenciais (você corrigiu o Client ID/Secret): recomeça já, sem esperar o backoff do login recusado
+      if (this.deps.store.credentialsVersion !== this.lastCredentialsVersion) {
+        this.lastCredentialsVersion = this.deps.store.credentialsVersion;
+        this.authFailures = 0;
+        this.authBackoffUntil = 0;
+      }
+      if (now < this.backoffUntil || now < this.authBackoffUntil) return;
 
       const due: ChargeRecord[] = [];
       for (const r of records) {
@@ -521,14 +566,22 @@ export class MisticService {
         if (!this.limiter.tryAcquire()) break;
         try {
           await this.checkRecord(record);
+          this.authFailures = 0; // deu certo: as credenciais estão boas
+          this.authBackoffUntil = 0;
         } catch (err) {
           if (!(err instanceof MisticError)) throw err;
           if (err.code === "auth") {
-            this.authFailedVersion = this.deps.store.credentialsVersion;
-            this.deps.notify(
-              `${this.deps.accountName()}: MisticPay recusou o login`,
-              "Não dá pra confirmar pagamentos enquanto as credenciais estiverem erradas. Confira nas configurações da MisticPay."
-            );
+            // Login recusado pode ser passageiro (instabilidade/manutenção da MisticPay). Em vez de
+            // parar de vez até reiniciar o app, espera um tempo crescente e tenta de novo sozinho.
+            this.authFailures++;
+            this.authBackoffUntil = Date.now() + Math.min(AUTH_BACKOFF_MAX_MS, AUTH_BACKOFF_BASE_MS * 2 ** Math.min(this.authFailures - 1, 4));
+            // Só avisa quando já falhou várias vezes seguidas — aí sim é provável que as credenciais estejam mesmo erradas
+            if (this.authFailures === AUTH_FAILURES_BEFORE_WARNING) {
+              this.deps.notify(
+                `${this.deps.accountName()}: MisticPay recusou o login`,
+                "Não dá pra confirmar pagamentos enquanto as credenciais estiverem erradas. Confira nas configurações da MisticPay."
+              );
+            }
             break;
           }
           if (err.code === "rate_limit") {
@@ -551,8 +604,9 @@ export class MisticService {
   async withdraw(input: WithdrawRequest): Promise<ChargeRecord> {
     this.assertConfigured();
     // Sem a senha de saque certa, nem chega a olhar o resto do pedido — é a última linha de defesa
-    // contra alguém com acesso ao computador (ou ao painel) sacar sem autorização
-    this.deps.store.assertWithdrawPassword(input.withdrawPassword);
+    // contra alguém com acesso ao computador (ou ao painel) sacar sem autorização. Funcionário de
+    // empresa: quem confere a senha (e o bloqueio e o saldo) é o servidor, na hora do saque.
+    if (!this.isEmployee()) this.deps.store.assertWithdrawPassword(input.withdrawPassword);
 
     const cents = parseAmountToCents(input.amount);
     if (cents === null) throw validation("Informe um valor de saque válido (com no máximo 2 casas decimais).");
@@ -582,12 +636,10 @@ export class MisticService {
     this.inflightWithdraws.add(fingerprint);
     try {
       const description = (input.description ?? "").trim().slice(0, 120);
-      const result = await this.client.withdraw({
-        amount: centsToReais(cents),
-        pixKey: key,
-        pixKeyType: type,
-        description: description || "Saque",
-      });
+      const payload = { amount: centsToReais(cents), pixKey: key, pixKeyType: type, description: description || "Saque" };
+      const result = this.isEmployee()
+        ? await this.deps.remoteMoney!.withdrawAsEmployee(payload, input.withdrawPassword ?? "")
+        : await this.client.withdraw(payload);
 
       const record = newRecord({ id: randomUUID(), kind: "withdraw", amountCents: cents, description });
       Object.assign(record, { misticId: result.transactionId, pixKeyType: type, pixKeyMasked: maskedKey });
@@ -596,6 +648,26 @@ export class MisticService {
       return record;
     } finally {
       this.inflightWithdraws.delete(fingerprint);
+    }
+  }
+
+  /** Esta conta é funcionário de empresa? (a MisticPay dela é a do líder, no servidor). */
+  get employeeMode(): boolean {
+    return this.isEmployee();
+  }
+
+  /** Situação do dinheiro do funcionário pro painel: saldo virtual, bloqueio do líder e se já tem senha de saque. */
+  employeeStatus(): Promise<{ availableBalance: number; withdrawBlocked: boolean; hasWithdrawPassword: boolean }> {
+    if (!this.deps.remoteMoney) throw new MisticError("Esta conta não é de uma empresa.", "validation");
+    return this.deps.remoteMoney.employeeMoneyStatus();
+  }
+
+  /** Cria/troca/remove (`null`) a senha de saque. Funcionário → servidor do líder; conta normal → local. */
+  async setWithdrawPassword(password: string | null, currentPassword?: string): Promise<void> {
+    if (this.isEmployee()) {
+      await this.deps.remoteMoney!.setEmployeeWithdrawPassword(password, currentPassword);
+    } else {
+      this.deps.store.update({ withdrawPassword: password, currentWithdrawPassword: currentPassword });
     }
   }
 

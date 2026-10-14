@@ -35,6 +35,8 @@ export interface ChatSummary {
   jid: string;
   isGroup: boolean;
   name: string | null;
+  /** Nome salvo pelo operador (tem prioridade na tela). null = contato não salvo. */
+  savedName: string | null;
   lastMessageAt: number;
   lastMessagePreview: string | null;
   lastMessageType: ChatMessageType | null;
@@ -77,11 +79,29 @@ export interface ChatMessageRecord {
   reactionEmoji: string | null;
   reactionTargetId: string | null;
   status: string | null;
+  /** A mensagem foi editada (mostra "editada" ao lado, igual ao WhatsApp). */
+  edited: boolean;
   timestamp: number;
   createdAt: number;
 }
 
-export type NewChatMessage = Omit<ChatMessageRecord, "createdAt">;
+export type NewChatMessage = Omit<ChatMessageRecord, "createdAt" | "edited">;
+
+/** Uma mensagem encontrada na busca global (estilo WhatsApp): a mensagem + de que conversa ela é. */
+export interface GlobalMessageMatch {
+  chatJid: string;
+  isGroup: boolean;
+  /** Nome da conversa (grupo) ou pushName do contato. */
+  name: string | null;
+  /** Nome salvo pelo operador (tem prioridade na hora de mostrar). */
+  savedName: string | null;
+  id: string;
+  text: string | null;
+  timestamp: number;
+  fromMe: boolean;
+  /** Quem mandou a mensagem (pushName) — pro "~Fulano" em grupo. */
+  senderName: string | null;
+}
 
 interface ChatRow {
   chat_jid: string;
@@ -102,6 +122,7 @@ interface ChatRow {
   reaction_emoji: string | null;
   reaction_target_id: string | null;
   status: string | null;
+  edited: number;
   timestamp: number;
   created_at: number;
 }
@@ -110,6 +131,7 @@ interface SummaryRow {
   jid: string;
   is_group: number;
   name: string | null;
+  saved_name?: string | null;
   last_message_at: number;
   last_message_preview: string | null;
   last_message_type: string | null;
@@ -142,6 +164,7 @@ function rowToMessage(r: ChatRow): ChatMessageRecord {
     reactionEmoji: r.reaction_emoji,
     reactionTargetId: r.reaction_target_id,
     status: r.status,
+    edited: !!r.edited,
     timestamp: r.timestamp,
     createdAt: r.created_at,
   };
@@ -152,6 +175,7 @@ function rowToSummary(r: SummaryRow): ChatSummary {
     jid: r.jid,
     isGroup: !!r.is_group,
     name: r.name,
+    savedName: r.saved_name ?? null,
     lastMessageAt: r.last_message_at,
     lastMessagePreview: r.last_message_preview,
     lastMessageType: r.last_message_type as ChatMessageType | null,
@@ -270,6 +294,7 @@ export class ChatStore {
     this.ensureColumn("chats", "last_message_sender_name", "TEXT");
     this.ensureColumn("chats", "last_message_from_me", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("messages", "media_retry_sweep_count", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("messages", "edited", "INTEGER NOT NULL DEFAULT 0");
     this.runOnce(1, () => {
       // Mídias que desistiram por causa do servidor `a.whatsapp.net` (nome que não existe no DNS)
       // tinham gasto todas as tentativas automáticas sem nunca poder dar certo. Agora que o download
@@ -294,6 +319,17 @@ export class ChatStore {
       );
     `);
     this.db.run("CREATE INDEX IF NOT EXISTS idx_folder_chats_chat ON folder_chats(chat_jid);");
+    // Anotações soltas deste banco (ex.: se as listas daqui já foram juntadas às do servidor)
+    this.db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);");
+  }
+
+  getMeta(key: string): string | null {
+    const row = this.db.query("SELECT value FROM meta WHERE key = $key").get({ $key: key }) as { value: string } | null;
+    return row?.value ?? null;
+  }
+
+  setMeta(key: string, value: string): void {
+    this.db.query("INSERT INTO meta (key, value) VALUES ($key, $value) ON CONFLICT(key) DO UPDATE SET value = $value").run({ $key: key, $value: value });
   }
 
   /** Roda um ajuste nos dados uma única vez por banco (controlado pelo `user_version` do SQLite). */
@@ -502,6 +538,106 @@ export class ChatStore {
     return true;
   }
 
+  /**
+   * Edição de mensagem: troca o texto e marca como editada (só pra mensagem de texto que ainda existe
+   * e não foi apagada). Devolve false se não achou (ou não era texto) — aí nada muda.
+   */
+  markEdited(chatJid: string, id: string, newText: string): boolean {
+    const { changes } = this.db
+      .query("UPDATE messages SET text = $text, edited = 1 WHERE chat_jid = $chatJid AND id = $id AND type = 'text'")
+      .run({ $chatJid: chatJid, $id: id, $text: newText });
+    if (changes === 0) return false;
+    this.refreshLastMessagePreview(chatJid);
+    return true;
+  }
+
+  /** Nome salvo de um contato (tem prioridade sobre o pushName, igual ao WhatsApp mostrar o nome salvo). */
+  savedContactName(jid: string): string | null {
+    return this.getMeta(`contact_name:${jid}`);
+  }
+
+  /** Salva (ou remove, com null) o nome de um contato. Só no painel — a sincronia com o WhatsApp é à parte. */
+  setSavedContactName(jid: string, name: string | null): void {
+    if (name) this.setMeta(`contact_name:${jid}`, name);
+    else this.db.query("DELETE FROM meta WHERE key = $k").run({ $k: `contact_name:${jid}` });
+  }
+
+  /** Contatos a que você deu nome (pra escolher ao começar uma conversa nova). Só pessoas, não grupos. */
+  listSavedContacts(): Array<{ jid: string; name: string }> {
+    const rows = this.db
+      .query("SELECT key, value FROM meta WHERE key LIKE 'contact_name:%' ORDER BY value COLLATE NOCASE")
+      .all() as Array<{ key: string; value: string }>;
+    return rows
+      .map((r) => ({ jid: r.key.slice("contact_name:".length), name: r.value }))
+      .filter((c) => !c.jid.endsWith("@g.us"));
+  }
+
+  /** Essa conversa já existe no banco? (usado pra decidir se precisa fundir duplicatas) */
+  hasChat(jid: string): boolean {
+    return !!this.db.query("SELECT 1 FROM chats WHERE jid = $jid").get({ $jid: jid });
+  }
+
+  /**
+   * Funde a conversa `fromJid` na `toJid` — a MESMA pessoa que apareceu sob dois JIDs (ex.: telefone
+   * `@s.whatsapp.net` e `@lid`, por causa da migração de LID do WhatsApp). Move mensagens, vínculos de
+   * lista e o nome salvo; soma não-lidas; mantém fixada/arquivada/nome; e apaga a linha de origem.
+   * Não mexe no WhatsApp — só junta o histórico local. Idempotente e seguro se `toJid` ainda não existir.
+   */
+  mergeChat(fromJid: string, toJid: string): void {
+    if (fromJid === toJid) return;
+    this.db.transaction(() => {
+      // A linha de destino precisa existir pra receber as mensagens (FK lógica + preview).
+      const from = this.db.query("SELECT * FROM chats WHERE jid = $jid").get({ $jid: fromJid }) as SummaryRow | null;
+      if (!from) return; // nada pra fundir
+      this.touchChat(toJid, from.is_group === 1, null);
+
+      // Mensagens e vínculos de lista: OR IGNORE pula a MESMA mensagem/vínculo que já exista no destino
+      // (a mesma mensagem pode ter sido ecoada sob os dois JIDs), depois apaga o que sobrou na origem.
+      this.db.query("UPDATE OR IGNORE messages SET chat_jid = $to WHERE chat_jid = $from").run({ $to: toJid, $from: fromJid });
+      this.db.query("DELETE FROM messages WHERE chat_jid = $from").run({ $from: fromJid });
+      this.db.query("UPDATE OR IGNORE folder_chats SET chat_jid = $to WHERE chat_jid = $from").run({ $to: toJid, $from: fromJid });
+      this.db.query("DELETE FROM folder_chats WHERE chat_jid = $from").run({ $from: fromJid });
+
+      // Metadados da conversa: soma não-lidas, mantém fixada/arquivada/nome se qualquer lado tiver.
+      this.db
+        .query(
+          `UPDATE chats SET
+             name = COALESCE(name, $name),
+             unread_count = unread_count + $unread,
+             pinned_at = COALESCE(pinned_at, $pinnedAt),
+             pin_is_temporary = CASE WHEN pinned_at IS NOT NULL THEN pin_is_temporary ELSE $pinTemp END,
+             archived = CASE WHEN archived = 1 OR $archived = 1 THEN 1 ELSE 0 END,
+             updated_at = $now
+           WHERE jid = $jid`
+        )
+        .run({
+          $jid: toJid,
+          $name: from.name,
+          $unread: from.unread_count,
+          $pinnedAt: from.pinned_at,
+          $pinTemp: from.pin_is_temporary,
+          $archived: from.archived,
+          $now: Date.now(),
+        });
+
+      // Nome salvo do contato: leva pro destino se ele ainda não tiver um.
+      const fromName = this.getMeta(`contact_name:${fromJid}`);
+      if (fromName && !this.getMeta(`contact_name:${toJid}`)) this.setMeta(`contact_name:${toJid}`, fromName);
+      this.db.query("DELETE FROM meta WHERE key = $k").run({ $k: `contact_name:${fromJid}` });
+
+      // Apaga a conversa de origem e recalcula a prévia da última mensagem do destino.
+      this.db.query("DELETE FROM chats WHERE jid = $jid").run({ $jid: fromJid });
+      this.refreshLastMessagePreview(toJid);
+    })();
+  }
+
+  /** Exclui a conversa inteira do painel: mensagens, a própria conversa e os vínculos com listas. (Não mexe no WhatsApp.) */
+  deleteChat(chatJid: string): void {
+    this.db.query("DELETE FROM messages WHERE chat_jid = $jid").run({ $jid: chatJid });
+    this.db.query("DELETE FROM folder_chats WHERE chat_jid = $jid").run({ $jid: chatJid });
+    this.db.query("DELETE FROM chats WHERE jid = $jid").run({ $jid: chatJid });
+  }
+
   /** "Apagar para mim": some do histórico deste painel (não mexe no WhatsApp de verdade). */
   deleteMessage(chatJid: string, id: string): boolean {
     const { changes } = this.db
@@ -512,12 +648,60 @@ export class ChatStore {
     return true;
   }
 
+  /**
+   * Horário (ms) da mensagem mais recente dessa conversa, ou 0 se não houver. Serve pra ordenar o que
+   * VOCÊ envia logo em seguida: as mensagens que chegam trazem o horário do servidor do WhatsApp (em
+   * segundos) e, se o relógio do computador estiver atrasado, o `Date.now()` da sua resposta ficaria
+   * ANTES da mensagem recebida — e a sua subia por cima dela. Com isto, a resposta nunca fica antes.
+   */
+  latestMessageTimestamp(chatJid: string): number {
+    const row = this.db.query("SELECT MAX(timestamp) AS t FROM messages WHERE chat_jid = $jid").get({ $jid: chatJid }) as { t: number | null } | null;
+    return row?.t ?? 0;
+  }
+
   /** Mensagens de texto que contêm o termo buscado, mais recente primeiro. */
   searchMessages(chatJid: string, query: string, limit = 50): ChatMessageRecord[] {
     const rows = this.db
       .query("SELECT * FROM messages WHERE chat_jid = $chatJid AND text LIKE $q ESCAPE '\\' ORDER BY timestamp DESC, id DESC LIMIT $limit")
       .all({ $chatJid: chatJid, $q: `%${escapeLike(query)}%`, $limit: limit }) as ChatRow[];
     return rows.map(rowToMessage);
+  }
+
+  /** Mensagens de texto que contêm o termo em QUALQUER conversa (busca global estilo WhatsApp), mais recente primeiro. */
+  searchAllMessages(query: string, limit = 30): GlobalMessageMatch[] {
+    const rows = this.db
+      .query(
+        `SELECT m.chat_jid, m.id, m.text, m.from_me, m.push_name, m.timestamp,
+                c.is_group, c.name AS chat_name,
+                (SELECT value FROM meta WHERE key = 'contact_name:' || c.jid) AS saved_name
+           FROM messages m
+           JOIN chats c ON c.jid = m.chat_jid
+          WHERE m.text LIKE $q ESCAPE '\\' AND m.type NOT IN ('revoked', 'system')
+          ORDER BY m.timestamp DESC, m.id DESC
+          LIMIT $limit`
+      )
+      .all({ $q: `%${escapeLike(query)}%`, $limit: limit }) as Array<{
+      chat_jid: string;
+      id: string;
+      text: string | null;
+      from_me: number;
+      push_name: string | null;
+      timestamp: number;
+      is_group: number;
+      chat_name: string | null;
+      saved_name: string | null;
+    }>;
+    return rows.map((r) => ({
+      chatJid: r.chat_jid,
+      isGroup: r.is_group === 1,
+      name: r.chat_name,
+      savedName: r.saved_name,
+      id: r.id,
+      text: r.text,
+      timestamp: r.timestamp,
+      fromMe: r.from_me === 1,
+      senderName: r.push_name,
+    }));
   }
 
   /** Mídia já baixada dessa conversa (fotos, vídeos, áudios, documentos, figurinhas), mais recente primeiro — pra galeria do "dados do contato". */
@@ -634,7 +818,7 @@ export class ChatStore {
   listChats({ includeArchived = false }: { includeArchived?: boolean } = {}): ChatSummary[] {
     const rows = this.db
       .query(
-        `SELECT * FROM chats
+        `SELECT *, (SELECT value FROM meta WHERE key = 'contact_name:' || jid) AS saved_name FROM chats
          WHERE last_message_at > 0 ${includeArchived ? "" : "AND archived = 0"}
          AND NOT EXISTS (SELECT 1 FROM folder_chats fc WHERE fc.chat_jid = chats.jid)
          ORDER BY (pinned_at IS NULL) ASC, pinned_at DESC, last_message_at DESC`
@@ -646,14 +830,13 @@ export class ChatStore {
   /** Só as conversas arquivadas, mais recente primeiro (pra seção "Arquivadas" do painel). */
   listArchivedChats(): ChatSummary[] {
     const rows = this.db
-      .query("SELECT * FROM chats WHERE last_message_at > 0 AND archived = 1 ORDER BY last_message_at DESC")
+      .query("SELECT *, (SELECT value FROM meta WHERE key = 'contact_name:' || jid) AS saved_name FROM chats WHERE last_message_at > 0 AND archived = 1 ORDER BY last_message_at DESC")
       .all() as SummaryRow[];
     return rows.map(rowToSummary);
   }
 
   /** Cria uma lista de conversas nova (ex.: "Clientes Premium"), com o nome que você escolher. */
-  createFolder(name: string): ChatFolder {
-    const id = randomUUID();
+  createFolder(name: string, id: string = randomUUID()): ChatFolder {
     const now = Date.now();
     const { position } = this.db.query("SELECT COALESCE(MAX(position), -1) + 1 AS position FROM folders").get() as { position: number };
     this.db
@@ -666,6 +849,27 @@ export class ChatStore {
     this.db.query("DELETE FROM folder_chats WHERE folder_id = $id").run({ $id: id });
     const { changes } = this.db.query("DELETE FROM folders WHERE id = $id").run({ $id: id });
     return changes > 0;
+  }
+
+  /** Todas as conversas em listas, como pares (lista, conversa) — pra mandar as listas daqui ao servidor. */
+  listFolderMemberships(): Array<{ folderId: string; chatJid: string }> {
+    const rows = this.db.query("SELECT folder_id, chat_jid FROM folder_chats ORDER BY added_at ASC").all() as Array<{ folder_id: string; chat_jid: string }>;
+    return rows.map((r) => ({ folderId: r.folder_id, chatJid: r.chat_jid }));
+  }
+
+  /**
+   * Troca todas as listas e o que há dentro delas pelo que veio do servidor (listas compartilhadas
+   * entre quem atende no mesmo WhatsApp). Tudo de uma vez: o painel nunca lê as listas pela metade.
+   */
+  replaceFolders(folders: Array<{ id: string; name: string; createdAt: number }>, memberships: Array<{ folderId: string; chatJid: string; addedAt: number }>): void {
+    this.db.transaction(() => {
+      this.db.run("DELETE FROM folder_chats");
+      this.db.run("DELETE FROM folders");
+      const insertFolder = this.db.query("INSERT INTO folders (id, name, position, created_at) VALUES ($id, $name, $position, $createdAt)");
+      folders.forEach((f, position) => insertFolder.run({ $id: f.id, $name: f.name, $position: position, $createdAt: f.createdAt }));
+      const insertChat = this.db.query("INSERT OR IGNORE INTO folder_chats (folder_id, chat_jid, added_at) VALUES ($folderId, $chatJid, $addedAt)");
+      for (const m of memberships) insertChat.run({ $folderId: m.folderId, $chatJid: m.chatJid, $addedAt: m.addedAt });
+    })();
   }
 
   /** Todas as listas que você criou, na ordem em que foram criadas. */
@@ -702,7 +906,7 @@ export class ChatStore {
   listChatsInFolder(folderId: string): ChatSummary[] {
     const rows = this.db
       .query(
-        `SELECT c.* FROM chats c
+        `SELECT c.*, (SELECT value FROM meta WHERE key = 'contact_name:' || c.jid) AS saved_name FROM chats c
          JOIN folder_chats fc ON fc.chat_jid = c.jid
          WHERE fc.folder_id = $folderId AND c.last_message_at > 0
          ORDER BY (c.pinned_at IS NULL) ASC, c.pinned_at DESC, c.last_message_at DESC`
@@ -716,9 +920,19 @@ export class ChatStore {
    * (nunca por OFFSET: a tabela cresce sem parar). `before` = timestamp da
    * mensagem mais antiga já carregada, pra pedir a próxima leva mais antiga.
    */
-  listMessages(chatJid: string, { before, limit = 50 }: { before?: number; limit?: number } = {}): ChatMessageRecord[] {
+  listMessages(chatJid: string, { before, beforeId, limit = 50 }: { before?: number; beforeId?: string; limit?: number } = {}): ChatMessageRecord[] {
     const rows = (
-      before != null
+      before != null && beforeId
+        ? // Cursor completo (horário + id), na mesma ordem da listagem: o horário vem em segundos
+          // inteiros, então várias mensagens dividem o mesmo — só pelo horário, as que empatavam com a
+          // última da página anterior eram puladas
+          this.db
+            .query(
+              `SELECT * FROM messages WHERE chat_jid = $chatJid AND (timestamp < $before OR (timestamp = $before AND id < $beforeId))
+               ORDER BY timestamp DESC, id DESC LIMIT $limit`
+            )
+            .all({ $chatJid: chatJid, $before: before, $beforeId: beforeId, $limit: limit })
+        : before != null
         ? this.db
             .query("SELECT * FROM messages WHERE chat_jid = $chatJid AND timestamp < $before ORDER BY timestamp DESC, id DESC LIMIT $limit")
             .all({ $chatJid: chatJid, $before: before, $limit: limit })

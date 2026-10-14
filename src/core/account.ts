@@ -26,7 +26,7 @@ import { GreetingService, type GreetingTiming } from "../services/greeting.servi
 import { InactivityGuard } from "../services/inactivity-guard";
 import { AwayMessageService } from "../services/away-message.service";
 import { sendNotification } from "../services/notification.service";
-import { MisticService, type MisticTiming } from "../services/mistic/service";
+import { MisticService, type MisticTiming, type RemoteMoney } from "../services/mistic/service";
 import type { RateLimiter } from "../services/mistic/rate-limiter";
 import { UberTripTrackerService, type UberStatusFetcher } from "../services/uber-trip-tracker.service";
 import { openUberStatusFetcher } from "./uber-cdp";
@@ -38,6 +38,9 @@ import { phoneFromJid, normalizeJid } from "../utils/jid";
 import { centsToReais, formatBRL } from "../utils/money";
 import { logger } from "../utils/logger";
 import { CONFIG } from "../config";
+import { AccountCoordination } from "./account-coordination";
+import { workspaceIdentityOf } from "./wa-identity";
+import type { LeaseHolder, WorkspaceCoordinator } from "./auth-provider";
 import { generateMessageIDV2 } from "baileys-joss";
 import type { AnyMessageContent, WAMessage, WASocket } from "baileys-joss";
 
@@ -59,6 +62,11 @@ export interface AccountOptions {
   greetingTiming?: GreetingTiming;
   /** Só pra testes: a MisticPay de mentira e os tempos do acompanhamento de pagamentos. */
   mistic?: { fetch?: typeof fetch; timing?: MisticTiming; limiter?: RateLimiter };
+  /**
+   * Funcionário de empresa: por aqui cobrar/conferir/sacar passa pelo servidor do líder (que tem as
+   * credenciais da MisticPay e faz o split). Ausente = cada conta usa a MisticPay local, como sempre.
+   */
+  money?: RemoteMoney;
   /** Chamado quando a configuração da MisticPay muda (liga/desliga o botão solto na tela). */
   onMisticChange?: () => void;
   /** Só pra testes: baixar mídia do chat (fotos, áudios...) sem precisar de rede/WhatsApp de verdade. */
@@ -76,6 +84,10 @@ export interface AccountOptions {
   uberTripPollIntervalMs?: number;
   /** Só pra testes: abre a "torneira" de leituras de status de uma corrida sem precisar de navegador de verdade. */
   uberOpenStatusFetcher?: (shareToken: string) => Promise<UberStatusFetcher>;
+  /** Só pra testes: quantas vezes tentar abrir o navegador da corrida (produção tenta de novo algumas vezes). */
+  uberOpenRetries?: number;
+  /** Só pra testes: espera entre as tentativas de abrir (produção espera alguns segundos). */
+  uberOpenRetryDelayMs?: number;
   /** Só pra testes: de quanto em quanto tempo confere se o WhatsApp já conectou pra retomar corridas guardadas. */
   uberResumeCheckMs?: number;
   /**
@@ -84,6 +96,18 @@ export interface AccountOptions {
    * um tempo bem maior; testes trocam por algo rápido (ou `0` pra desligar a varredura automática).
    */
   chatMediaRetrySweepMs?: number;
+  /**
+   * Por onde esta instalação combina com outras conectadas no mesmo WhatsApp (vez do bot, vez das
+   * corridas, listas de conversas): o servidor de licenças. Sem isto, nada é combinado.
+   */
+  coordinator?: WorkspaceCoordinator;
+  /** Só pra testes: de quanto em quanto tempo a vez do bot é renovada/conferida. */
+  coordinationIntervalMs?: number;
+}
+
+/** "brine" ou "brine (computador DESKTOP-ABC)" — pra dizer quem está com o bot ligado. */
+export function describeLeaseHolder(holder: LeaseHolder): string {
+  return holder.deviceName ? `${holder.username} (computador ${holder.deviceName})` : holder.username;
 }
 
 /** Até quanto tempo atrás um "NN,NN chama ?" ainda vale como o valor combinado da corrida de agora. */
@@ -137,6 +161,10 @@ export class Account {
   /** Acompanha corridas da Uber em andamento (pelo link público de compartilhar viagem), avisando o cliente sozinho. */
   readonly uberTrips: UberTripTrackerService;
   private readonly uberTripStore: UberTripStore;
+  /** O que esta conta combina com outras instalações do programa conectadas no mesmo WhatsApp. */
+  readonly coordination: AccountCoordination;
+  private readonly coordinationIntervalMs: number;
+  private coordinationTimer?: ReturnType<typeof setInterval>;
   private uberResumeTimer?: ReturnType<typeof setInterval>;
   private readonly uberResumeCheckMs: number;
 
@@ -247,6 +275,7 @@ export class Account {
       },
       // O agradecimento final do pagamento saiu: se a conversa estava fixada pra acompanhar a venda, desafixa sozinha
       onThanksSent: (chatJid) => this.chats.unpinIfTemporary(chatJid),
+      remoteMoney: options.money,
       ...options.mistic,
     });
 
@@ -262,6 +291,7 @@ export class Account {
       onMessage: (sock, msg) => this.handler.handle(sock, msg),
       onGroups: (groups) => this.bot.setGroups(groups),
       onMessageUpdate: (key, status) => this.chats.updateMessageStatus(key, status),
+      onMessageEdit: (key, message) => this.chats.applyIncomingEdit(key, message),
     });
 
     this.chats = new ChatService(new ChatStore(this.paths.chatDb), {
@@ -271,18 +301,55 @@ export class Account {
       resolveChatName: (chatJid, isGroup, pushName) =>
         isGroup
           ? (this.bot.groups.find((g) => g.jid === chatJid)?.name ?? null)
-          : pushName || this.conversations.find(chatJid)?.name || null,
+          : // Nome salvo pelo operador vem primeiro (igual ao WhatsApp mostrar o nome do contato salvo, não o pushName)
+            this.chats.savedContactName(chatJid) || pushName || this.conversations.find(chatJid)?.name || null,
       downloadMedia: options.chatDownloadMedia,
       mediaRetryDelaysMs: options.chatMediaRetryDelaysMs,
       onMessage: (message, isNew) => options.onChatMessage?.(this.id, message, isNew),
       onMessageDeleted: (chatJid, id) => options.onChatMessageDeleted?.(this.id, chatJid, id),
     });
 
+    this.coordinationIntervalMs = options.coordinator ? (options.coordinationIntervalMs ?? 20_000) : 0;
+    this.coordination = new AccountCoordination({
+      coordinator: options.coordinator,
+      identity: () => {
+        try {
+          return workspaceIdentityOf(this.connection.getSock());
+        } catch {
+          return null; // conexão ainda não criada
+        }
+      },
+      botActive: () => this.bot.active,
+      chats: this.chats,
+      label: () => this.name,
+      onBotConflict: (holder) => {
+        this.setBotActive(false);
+        const who = describeLeaseHolder(holder);
+        logger.warn({ account: this.name, holder }, "Bot DESLIGADO: outra instalação já está com o bot ligado neste WhatsApp");
+        this.notify(`${this.name}: bot desligado`, `${who} já está com o bot ligado neste WhatsApp. Só um pode ficar ligado por vez.`);
+      },
+      // Funcionário de empresa: o líder liberou menos WhatsApp do que o conectado aqui (ou bloqueou este)
+      onWhatsappBlocked: (max) => {
+        if (this.bot.active) this.setBotActive(false);
+        logger.warn({ account: this.name, max }, "Bot DESLIGADO: o líder não liberou este WhatsApp para o funcionário");
+        this.notify(
+          `${this.name}: WhatsApp não liberado`,
+          max > 0
+            ? `O líder liberou só ${max} WhatsApp para você, e este passou do limite. Fale com o líder para liberar mais ou use um dos números já liberados.`
+            : "O líder não liberou nenhum WhatsApp para você. Fale com o líder."
+        );
+      },
+    });
+
     this.uberResumeCheckMs = options.uberResumeCheckMs ?? 2000;
     this.uberTripStore = new UberTripStore(this.paths.uberTrips);
     this.uberTrips = new UberTripTrackerService({
+      // Com outra pessoa atendendo no mesmo WhatsApp em outro computador, só uma instalação acompanha cada corrida
+      canTrack: (_chatJid, shareToken) => this.coordination.claimRide(shareToken),
       pollIntervalMs: options.uberTripPollIntervalMs,
       openStatusFetcher: options.uberOpenStatusFetcher ?? openUberStatusFetcher,
+      openRetries: options.uberOpenRetries,
+      openRetryDelayMs: options.uberOpenRetryDelayMs,
       // Em qual marco a cobrança sai: configurável nas Configurações do chat (padrão: 2 min do motorista)
       chargeTrigger: () => this.settings.get().rideChargeTrigger,
       // Corridas em andamento ficam em disco: fechar e abrir o programa retoma de onde parou (ver `start`)
@@ -290,10 +357,13 @@ export class Account {
       onCharge: async (chatJid, agreedAmountCents) => {
         if (!this.settings.get().rideAutoChargeEnabled) return false; // desligado: só acompanha e avisa, não cobra
 
-        try {
-          await this.sendPrivate(chatJid, { text: this.settings.rideChargeMessageText() });
-        } catch (err) {
-          logger.error({ err, account: this.name, chatJid }, "Falha ao avisar sobre o pagamento antecipado da corrida");
+        // O aviso (cancelamento automático) só vai se estiver ligado — senão, só o PIX
+        if (this.settings.get().rideChargeMessageEnabled) {
+          try {
+            await this.sendPrivate(chatJid, { text: this.settings.rideChargeMessageText() });
+          } catch (err) {
+            logger.error({ err, account: this.name, chatJid }, "Falha ao avisar sobre o pagamento antecipado da corrida");
+          }
         }
 
         try {
@@ -350,6 +420,10 @@ export class Account {
       }, this.chatMediaRetrySweepMs);
     }
     this.resumeUberTripsWhenConnected();
+    if (this.coordinationIntervalMs > 0) {
+      // Renova a vez do bot e pega o caso de dois computadores abrirem com o bot já ligado
+      this.coordinationTimer = setInterval(() => void this.coordination.tick(), this.coordinationIntervalMs);
+    }
     return this.connection.start();
   }
 
@@ -374,6 +448,8 @@ export class Account {
     this.guard.reset();
     this.connection.stop();
     clearInterval(this.uberResumeTimer);
+    clearInterval(this.coordinationTimer);
+    void this.coordination.releaseBot(); // o programa está fechando: libera a vez do bot pra quem mais atende neste WhatsApp
     // Suspende (não encerra): as corridas continuam guardadas em disco pra próxima vez que abrir
     this.uberTrips.suspendAll();
     clearInterval(this.mediaRetryTimer);
@@ -398,7 +474,7 @@ export class Account {
     for (const m of recent) {
       if (m.timestamp < oldestAllowed) break;
       if (!m.fromMe || m.type !== "text" || !m.text) continue;
-      const cents = extractChamaAmountCents(m.text);
+      const cents = extractChamaAmountCents(m.text, this.settings.get().rideChargeKeyword);
       if (cents !== null) return cents;
     }
     return null;
@@ -406,10 +482,14 @@ export class Account {
 
   /**
    * Mensagem nova nessa conversa toca som no painel? Vale a configuração de som DESTA conta (cada
-   * WhatsApp tem a sua), e conversa arquivada não toca: ela nem aparece na lista.
+   * WhatsApp tem a sua): conversa arquivada não toca (nem aparece na lista), e, com o som de grupo
+   * desligado, mensagem de grupo também não toca (só as privadas).
    */
   playsSoundFor(chatJid: string): boolean {
-    return this.settings.get().notificationSoundEnabled && !this.chats.isArchived(chatJid);
+    const settings = this.settings.get();
+    if (!settings.notificationSoundEnabled || this.chats.isArchived(chatJid)) return false;
+    if (chatJid.endsWith("@g.us") && !settings.groupSoundEnabled) return false;
+    return true;
   }
 
   /**
@@ -436,7 +516,7 @@ export class Account {
     // outra corrida (ex.: o motorista cancelou e você pediu outro carro) e substitui a anterior —
     // antes era ignorado enquanto a corrida velha ainda constasse como acompanhada.
 
-    const agreedAmountCents = extractChamaAmountCents(text) ?? this.findRecentChamaAmountCents(chatJid);
+    const agreedAmountCents = extractChamaAmountCents(text, this.settings.get().rideChargeKeyword) ?? this.findRecentChamaAmountCents(chatJid);
     if (agreedAmountCents === null) {
       // Pelo painel, ele mesmo pergunta o valor na tela e começa a acompanhar em seguida
       if (sentFromPanel) return;
@@ -519,6 +599,9 @@ export class Account {
   setBotActive(active: boolean): void {
     if (active) this.bot.enable();
     else this.bot.disable();
+    // Desligou (na mão, pela segurança, pelo recado, pela licença...): a vez do bot fica livre pra
+    // outra pessoa que atende neste WhatsApp ligar o dela
+    if (!active) void this.coordination.releaseBot();
     this.guard.reset();
     // Ligou de novo: da próxima vez que desligar, o recado automático pode avisar todo mundo outra vez
     if (active) this.awayMessage.reset();

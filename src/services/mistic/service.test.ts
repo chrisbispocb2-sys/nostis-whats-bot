@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -476,20 +476,49 @@ describe("cuidado com a API da MisticPay", () => {
     await expect(svc.checkNow(charges.list()[0]!.id)).rejects.toMatchObject({ code: "rate_limit" });
   });
 
-  test("credenciais recusadas: para de consultar, avisa uma vez e retoma quando forem trocadas", async () => {
+  test("login recusado passageiro: espera e tenta de novo sozinho (sem reiniciar), avisa só depois de várias falhas e se recupera quando a MisticPay volta", async () => {
+    const svc = newService();
+    const charge = await svc.createCharge({ chatJid: CHAT, amount: 1 });
+    const base = Date.now();
+    api.checkStatus = 401;
+
+    // Uma falha não avisa nem para pra sempre: espera um tempo (backoff) antes de tentar de novo
+    await svc.tick(); // falha 1
+    await svc.tick(); // dentro do backoff: não consulta de novo
+    expect(onlyCalls("/transactions/check").length).toBe(1);
+    expect(notifications.filter((n) => n.title.includes("recusou o login")).length).toBe(0);
+
+    setSystemTime(new Date(base + 3 * 60_000));
+    await svc.tick(); // falha 2 (backoff passou)
+    setSystemTime(new Date(base + 12 * 60_000));
+    await svc.tick(); // falha 3 → agora sim avisa, uma vez
+    expect(onlyCalls("/transactions/check").length).toBe(3);
+    expect(notifications.filter((n) => n.title.includes("recusou o login")).length).toBe(1);
+
+    setSystemTime(new Date(base + 60 * 60_000));
+    await svc.tick(); // falha 4: continua tentando, mas não repete o aviso
+    expect(notifications.filter((n) => n.title.includes("recusou o login")).length).toBe(1);
+
+    // A MisticPay volta ao normal: sem reiniciar nem trocar credenciais, a próxima consulta confirma o pagamento
+    api.checkStatus = 200;
+    api.states[charge.misticId!] = "COMPLETO";
+    setSystemTime(new Date(base + 120 * 60_000));
+    await svc.tick();
+    expect(charges.get(charge.id)!.status).toBe("paid");
+
+    setSystemTime();
+  });
+
+  test("corrigir as credenciais recomeça na hora, sem esperar o backoff do login recusado", async () => {
     const svc = newService();
     const charge = await svc.createCharge({ chatJid: CHAT, amount: 1 });
     api.checkStatus = 401;
-    await svc.tick();
-    await svc.tick();
-    await svc.tick();
-
+    await svc.tick(); // falha: entra em backoff
     expect(onlyCalls("/transactions/check").length).toBe(1);
-    expect(notifications.filter((n) => n.title.includes("recusou o login")).length).toBe(1);
 
     api.checkStatus = 200;
     api.states[charge.misticId!] = "COMPLETO";
-    store.update({ clientSecret: "cs_novo" });
+    store.update({ clientSecret: "cs_novo" }); // credenciais novas: tenta já no próximo ciclo
     await svc.tick();
     expect(charges.get(charge.id)!.status).toBe("paid");
   });

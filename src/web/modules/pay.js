@@ -1,4 +1,5 @@
 import { api } from "./api.js";
+import { state } from "./state.js";
 import { escapeHtml, formatBRL, formatCpf, formatCurrency, formatDateTime, formatPhone, firstName, relativeTime, renderTemplate, whatsappHtml } from "./utils.js";
 import { icon, notify, confirmDialog, bindModal, openModal, closeModal, isModalOpen, flagInvalid, setBusy, emptyState } from "./ui.js";
 
@@ -327,11 +328,18 @@ function paintInfo() {
   balanceEl.textContent = formatCurrency(info.availableBalance);
   blockedEl.textContent = formatCurrency(info.blockedBalance);
   userNameEl.textContent = info.name || "Conta MisticPay";
-  const flags = [info.accountVerified ? "conta verificada" : "conta NÃO verificada", info.documentVerified ? "documento verificado" : "documento NÃO verificado"];
-  userMetaEl.textContent = [info.email, info.document, ...flags].filter(Boolean).join(" · ");
+  if (config?.employee) {
+    // Funcionário: é o saldo virtual dele (o que ele fez), não os dados de uma conta MisticPay própria.
+    userMetaEl.textContent = "Saldo que você fez na MisticPay da empresa";
+  } else {
+    const flags = [info.accountVerified ? "conta verificada" : "conta NÃO verificada", info.documentVerified ? "documento verificado" : "documento NÃO verificado"];
+    userMetaEl.textContent = [info.email, info.document, ...flags].filter(Boolean).join(" · ");
+  }
   withdrawBalanceHint.textContent = `Disponível para saque: ${formatCurrency(info.availableBalance)}`;
 
-  if (info.withdrawBlocked) showAccountError("Os saques estão bloqueados nesta conta MisticPay. Fale com o suporte deles.");
+  if (info.withdrawBlocked) {
+    showAccountError(config?.employee ? "O líder bloqueou temporariamente os seus saques." : "Os saques estão bloqueados nesta conta MisticPay. Fale com o suporte deles.");
+  }
 }
 
 /** Sem senha de saque criada ainda, o saque fica bloqueado — avisa antes de a pessoa preencher tudo à toa. */
@@ -390,7 +398,10 @@ function renderContacts() {
   options.push(`<option value="${OTHER_NUMBER}">Outro número…</option>`);
   options.push(`<option value="${RANDOM_CLIENT}">🎲 Cliente aleatório (sem WhatsApp)</option>`);
   const html = options.join("");
-  const preferred = (activeConversations()[0] ?? list[0])?.chatJid ?? OTHER_NUMBER;
+  // Prioriza o cliente da conversa que você tem aberta no chat (se ele estiver na lista); senão, o da
+  // conversa mais recente em andamento.
+  const openChat = state.activeChatJid && list.some((c) => c.chatJid === state.activeChatJid) ? state.activeChatJid : null;
+  const preferred = openChat ?? (activeConversations()[0] ?? list[0])?.chatJid ?? OTHER_NUMBER;
   const has = (value) => [...contactSelect.options].some((o) => o.value === value);
 
   if (html !== contactsHtml) {

@@ -706,3 +706,31 @@ export function extractRevokeKey(msg: WAMessage): WAMessageKey | null {
   if (content?.protocolMessage?.type !== 0 /* REVOKE */) return null;
   return (content.protocolMessage.key as WAMessageKey | undefined) ?? null;
 }
+
+/**
+ * O novo texto de uma edição que chegou por `messages.update` (ver core/connection.ts). O WhatsApp
+ * entrega a edição aqui, com o conteúdo novo em `update.message` — geralmente embrulhado em
+ * `editedMessage.message`. Devolve null se não achar texto (edição de algo que não é texto).
+ */
+export function extractEditedText(message: WAMessage["message"]): string | null {
+  if (!message) return null;
+  const inner = (message as any).editedMessage?.message ?? (message as any).editedMessage ?? message;
+  const content = normalizeMessageContent(inner) ?? inner;
+  const text = content?.conversation ?? content?.extendedTextMessage?.text ?? null;
+  return typeof text === "string" && text.length > 0 ? text : null;
+}
+
+/**
+ * Edição de mensagem chegando (protocolMessage tipo 14 = MESSAGE_EDIT): a chave da mensagem editada e
+ * o novo texto. Usado pra refletir no painel uma edição feita no celular (ou o eco da feita pelo painel).
+ */
+export function extractMessageEdit(msg: WAMessage): { key: WAMessageKey; text: string } | null {
+  const content = normalizeMessageContent(msg.message);
+  const protocol = content?.protocolMessage;
+  if (protocol?.type !== 14 /* MESSAGE_EDIT */) return null;
+  const key = protocol.key as WAMessageKey | undefined;
+  const edited = protocol.editedMessage;
+  const text = edited?.conversation ?? edited?.extendedTextMessage?.text ?? null;
+  if (!key?.id || text == null) return null;
+  return { key, text };
+}

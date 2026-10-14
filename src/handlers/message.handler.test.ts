@@ -632,6 +632,41 @@ describe("histórico de chat: tudo que acontece numa conversa fica salvo", () =>
     expect(account.chats.listMessages(GROUP)[0]!.text).toBe("~ADM Ozy removeu ~Maria");
   });
 
+  test("histórico em páginas: reações não fazem o painel achar que acabou, e nenhuma mensagem é pulada nem repetida", async () => {
+    account.bot.setGroups([{ jid: GROUP, name: "Grupo Teste", hasPicture: false }]);
+    const now = Math.floor(Date.now() / 1000);
+
+    // 120 mensagens, várias no mesmo segundo (o horário do WhatsApp vem em segundos inteiros), e uma reação a cada 4
+    for (let i = 0; i < 120; i++) {
+      const timestamp = now - 1000 + Math.floor(i / 7);
+      await connection.deliver(groupText(GROUP, CLIENT, `mensagem ${i}`, { id: `TXT${String(i).padStart(3, "0")}`, timestamp }));
+      if (i % 4 === 0) {
+        await connection.deliver({
+          key: { remoteJid: GROUP, participant: CLIENT, fromMe: false, id: `REA${String(i).padStart(3, "0")}` },
+          message: { reactionMessage: { text: "👍", key: { id: `TXT${String(i).padStart(3, "0")}` } } },
+          messageTimestamp: timestamp,
+        } as unknown as StubMessage);
+      }
+    }
+
+    // a primeira página tem 50 linhas no banco, mas chega com menos itens (as reações vão anexadas)
+    const first = await account.chats.listMessagePage(GROUP, { limit: 50 });
+    expect(first.messages.length).toBeLessThan(50);
+    expect(first.hasMore).toBe(true);
+
+    const seen: string[] = first.messages.map((m) => m.id);
+    let page = first;
+    for (let guard = 0; guard < 20 && page.hasMore; guard++) {
+      page = await account.chats.listMessagePage(GROUP, { ...page.cursor!, limit: 50 });
+      seen.push(...page.messages.map((m) => m.id));
+    }
+
+    expect(page.hasMore).toBe(false);
+    expect(seen.length).toBe(120);
+    expect(new Set(seen).size).toBe(120);
+    expect(seen.every((id) => id.startsWith("TXT"))).toBe(true);
+  });
+
   test("som de mensagem nova: segue a configuração desta conta, e conversa arquivada não toca", async () => {
     await connection.deliver(privateText(CLIENT, "oi"));
     expect(account.playsSoundFor(CLIENT)).toBe(true);
@@ -643,6 +678,16 @@ describe("histórico de chat: tudo que acontece numa conversa fica salvo", () =>
     account.settings.update({ notificationSoundEnabled: false });
     expect(account.playsSoundFor(CLIENT)).toBe(false);
     expect(account.playsSoundFor("5511900000000@s.whatsapp.net")).toBe(false);
+  });
+
+  test("silenciar grupos: desligando o som de grupo, só o privado toca", () => {
+    // padrão: grupo e privado tocam
+    expect(account.playsSoundFor(GROUP)).toBe(true);
+    expect(account.playsSoundFor(CLIENT)).toBe(true);
+
+    account.settings.update({ groupSoundEnabled: false });
+    expect(account.playsSoundFor(GROUP)).toBe(false); // grupo mudo
+    expect(account.playsSoundFor(CLIENT)).toBe(true); // privado continua tocando
   });
 
   test("mensagem de grupo é gravada mesmo com o grupo desabilitado", async () => {
@@ -968,6 +1013,39 @@ describe("histórico de chat: tudo que acontece numa conversa fica salvo", () =>
       const sentContent = connection.sock.sent.find((m) => m.jid === CLIENT)?.content as any;
       expect(Buffer.isBuffer(sentContent.image)).toBe(true);
       expect(sentContent.caption).toBe("Olha a foto");
+    });
+
+    test("áudio num formato que o WhatsApp não toca (WAV): vai como arquivo, senão a mensagem nunca chegava", async () => {
+      connection.connected = true;
+      const sent = await account.chats.sendAsOperator(CLIENT, {
+        text: "Segue a narração",
+        media: { type: "audio", dataBase64: Buffer.from("RIFF....WAVE").toString("base64"), mimeType: "audio/wav", fileName: "narracao.wav" },
+      });
+
+      expect(sent).toMatchObject({ type: "document", mediaMimeType: "audio/wav", mediaFileName: "narracao.wav", isPtt: false });
+      const content = connection.sock.sent.find((m) => m.jid === CLIENT)?.content as any;
+      expect(content.audio).toBeUndefined();
+      expect(Buffer.isBuffer(content.document)).toBe(true);
+      expect(content).toMatchObject({ mimetype: "audio/wav", fileName: "narracao.wav", caption: "Segue a narração" });
+    });
+
+    test("áudio num formato que o WhatsApp toca (MP3, M4A, OGG): vai como áudio, com o mimetype que ele espera", async () => {
+      connection.connected = true;
+      const data = Buffer.from("audio").toString("base64");
+
+      for (const [mimeType, expected] of [
+        ["audio/mpeg", "audio/mpeg"],
+        ["audio/x-m4a", "audio/mp4"],
+        ["audio/ogg", "audio/ogg; codecs=opus"],
+        ["audio/ogg; codecs=opus", "audio/ogg; codecs=opus"],
+      ]) {
+        connection.sock.sent.length = 0;
+        const sent = await account.chats.sendAsOperator(CLIENT, { media: { type: "audio", dataBase64: data, mimeType: mimeType!, fileName: "audio" } });
+        expect(sent).toMatchObject({ type: "audio", mediaMimeType: expected });
+        const content = connection.sock.sent.find((m) => m.jid === CLIENT)?.content as any;
+        expect(Buffer.isBuffer(content.audio)).toBe(true);
+        expect(content.mimetype).toBe(expected!);
+      }
     });
 
     test("responder com uma figurinha pelo painel: envia como sticker, não como imagem", async () => {
@@ -1355,6 +1433,7 @@ describe("assistente de corrida: detecta o link mandado direto do celular (sem p
         uberOpenStatusFetcher: async () => {
           throw new Error("Nenhum navegador encontrado");
         },
+        uberOpenRetries: 1, // sem navegador é falha permanente: não adianta tentar de novo (no teste, falha na hora)
       }
     );
     const rideConnection = (rideAccount as unknown as { connection: FakeConnection }).connection;
@@ -1585,5 +1664,47 @@ describe("assistente de corrida: detecta o link mandado direto do celular (sem p
     } finally {
       rideAccount.stop();
     }
+  });
+});
+
+describe("conversas não duplicam (mesma pessoa por LID e por telefone)", () => {
+  test("mensagem por @lid e por telefone caem na MESMA conversa (sob o telefone)", async () => {
+    connection.sock.lidToPhone[CLIENT_LID] = CLIENT;
+    // Chega primeiro por @lid (migração de LID do WhatsApp), com o telefone no remoteJidAlt
+    await connection.deliver(privateText(CLIENT_LID, "Manda o Pix", { alt: CLIENT }));
+    // Depois chega pelo telefone (outro caminho do WhatsApp)
+    await connection.deliver(privateText(CLIENT, "Oi de novo"));
+
+    const chats = account.chats.listChats();
+    expect(chats.length).toBe(1);
+    expect(chats[0]!.jid).toBe(CLIENT);
+    expect(account.chats.listMessages(CLIENT).length).toBe(2);
+  });
+
+  test("eco de uma resposta/cobrança sua devolvida sob @lid cai na conversa do cliente (telefone)", async () => {
+    connection.sock.lidToPhone[CLIENT_LID] = CLIENT;
+    await connection.deliver(privateText(CLIENT, "Manda o Pix")); // cliente escreve pelo telefone
+    // Eco (fromMe) que o WhatsApp devolve sob @lid — não pode abrir uma segunda conversa
+    await connection.deliver(privateText(CLIENT_LID, "QR Code para pagar R$ 30,00", { fromMe: true, alt: CLIENT }));
+
+    const chats = account.chats.listChats();
+    expect(chats.length).toBe(1);
+    expect(chats[0]!.jid).toBe(CLIENT);
+    expect(account.chats.listMessages(CLIENT).length).toBe(2);
+  });
+
+  test("conversa já duplicada (linha legada sob @lid) se junta quando chega mensagem nova", async () => {
+    // Simula o estado de antes da correção: uma linha sob @lid com histórico
+    account.chats.recordIncoming(connection.getSock(), privateText(CLIENT_LID, "mensagem antiga"), CLIENT_LID, CLIENT_LID, false);
+    expect(account.chats.listChats().some((c) => c.jid === CLIENT_LID)).toBe(true);
+
+    // Chega uma mensagem nova que resolve o telefone: funde a linha antiga na do telefone
+    connection.sock.lidToPhone[CLIENT_LID] = CLIENT;
+    await connection.deliver(privateText(CLIENT_LID, "mensagem nova", { alt: CLIENT }));
+
+    const chats = account.chats.listChats();
+    expect(chats.length).toBe(1);
+    expect(chats[0]!.jid).toBe(CLIENT);
+    expect(account.chats.listMessages(CLIENT).length).toBe(2);
   });
 });

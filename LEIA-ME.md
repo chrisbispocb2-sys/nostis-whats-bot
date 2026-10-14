@@ -31,7 +31,7 @@ A aba **Administração** do painel continua igual, mas agora só repassa para o
 1. **Organize as pastas** (uma vez, bot fechado): `organizar-pastas.ps1`.
 2. **Suba o servidor** seguindo [servidor/README.md](servidor/README.md): gerar as chaves, criar o seu administrador, deixar rodando com HTTPS.
 3. **Aponte o app para o servidor**: em `app/src/config/license.ts`, preencha `serverUrl` (com `https://`) e `publicKey` (a chave pública que o servidor mostra ao iniciar).
-4. **Gere o exe**: `cd app` e `bun run build`. Sem o passo 3 o build se recusa a gerar.
+4. **Gere o exe**: `cd app` e `bun run build`. Sem o passo 3 o exe sai em modo local (sem controle de acesso) e o build avisa isso no final — não entregue um exe desses a clientes.
 5. **Entre no exe com o seu administrador**, crie um convite na aba Administração e mande o link para o cliente. Depois que ele se cadastrar, defina o prazo e as funcionalidades dele.
 
 ## O que ainda não está coberto

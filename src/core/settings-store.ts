@@ -27,10 +27,17 @@ export interface Settings {
   rideAssistantEnabled: boolean;
   /** Com o assistente ligado, cobrar automaticamente via MisticPay (desligado = só acompanha e avisa, sem cobrar). */
   rideAutoChargeEnabled: boolean;
+  /** Enviar a mensagem (o aviso de cancelamento automático) logo antes da cobrança. Desligado: só o PIX, sem o texto. */
+  rideChargeMessageEnabled: boolean;
   /** Mensagem mandada junto com a cobrança automática (a sua, ou a padrão). Aceita {valor}. */
   rideChargeMessage: string;
   /** Em que momento da corrida a cobrança automática sai. */
   rideChargeTrigger: RideChargeTrigger;
+  /**
+   * Palavra-chave que o bot procura pra captar o valor combinado da corrida (ex.: "25,00 chama"). O
+   * valor pode vir antes OU depois dela. Cada operador pode usar a palavra que preferir (padrão: "chama").
+   */
+  rideChargeKeyword: string;
   /** Texto mandado junto com os endereços de partida e destino, pro cliente conferir (o seu, ou o padrão). */
   rideRouteMessage: string;
   /** Avisos mandados ao cliente em cada marco da corrida (os seus, ou os padrão quando vazios). */
@@ -43,10 +50,12 @@ export interface Settings {
   rideVehicleDetailsEnabled: boolean;
   /** Toca um bip no painel quando chega mensagem nova (de quem não é você/o bot). */
   notificationSoundEnabled: boolean;
+  /** Tocar o som também para mensagens de GRUPO. Desligado = só mensagens privadas tocam. */
+  groupSoundEnabled: boolean;
 }
 
-export type RideChargeTrigger = "on_link" | "near_2min" | "near_1min" | "on_arrival";
-const RIDE_CHARGE_TRIGGERS: RideChargeTrigger[] = ["on_link", "near_2min", "near_1min", "on_arrival"];
+export type RideChargeTrigger = "on_link" | "near_2min" | "near_1min" | "on_arrival" | "on_trip";
+const RIDE_CHARGE_TRIGGERS: RideChargeTrigger[] = ["on_link", "near_2min", "near_1min", "on_arrival", "on_trip"];
 
 /** Os avisos de corrida editáveis: campo de `Settings` → texto padrão. */
 export const DEFAULT_RIDE_MESSAGES = {
@@ -73,6 +82,7 @@ export interface SettingsInput {
   awayMessage?: string;
   rideAssistantEnabled?: boolean;
   rideAutoChargeEnabled?: boolean;
+  rideChargeMessageEnabled?: boolean;
   rideChargeMessage?: string;
   rideChargeTrigger?: RideChargeTrigger;
   rideRouteMessage?: string;
@@ -82,7 +92,9 @@ export interface SettingsInput {
   rideStartedMessage?: string;
   rideDriverChangedMessage?: string;
   rideVehicleDetailsEnabled?: boolean;
+  rideChargeKeyword?: string;
   notificationSoundEnabled?: boolean;
+  groupSoundEnabled?: boolean;
 }
 
 export const DEFAULT_AUTO_SHUTDOWN_MINUTES = 5;
@@ -95,6 +107,14 @@ export const DEFAULT_RIDE_CHARGE_MESSAGE =
   "O sistema da Uber é automatizado: se o pagamento não for identificado em até 5 minutos depois da corrida começar, " +
   "ela é cancelada e o valor total é cobrado de você, no carro.";
 const MAX_RIDE_CHARGE_MESSAGE_LENGTH = 500;
+export const DEFAULT_RIDE_CHARGE_KEYWORD = "chama";
+const MAX_RIDE_CHARGE_KEYWORD_LENGTH = 40;
+
+/** Palavra-chave do valor da corrida: sempre devolve algo válido (cai no padrão se vier vazia). */
+function normalizeRideKeyword(value: unknown): string {
+  const kw = String(value ?? "").trim().slice(0, MAX_RIDE_CHARGE_KEYWORD_LENGTH);
+  return kw || DEFAULT_RIDE_CHARGE_KEYWORD;
+}
 
 const DEFAULT_SETTINGS: Settings = {
   ignoreAdminNames: false,
@@ -107,8 +127,10 @@ const DEFAULT_SETTINGS: Settings = {
   awayMessage: "",
   rideAssistantEnabled: true,
   rideAutoChargeEnabled: true,
+  rideChargeMessageEnabled: true,
   rideChargeMessage: "",
   rideChargeTrigger: "near_2min",
+  rideChargeKeyword: DEFAULT_RIDE_CHARGE_KEYWORD,
   rideRouteMessage: "",
   rideNear2MinMessage: "",
   rideNear1MinMessage: "",
@@ -117,6 +139,7 @@ const DEFAULT_SETTINGS: Settings = {
   rideDriverChangedMessage: "",
   rideVehicleDetailsEnabled: true,
   notificationSoundEnabled: true,
+  groupSoundEnabled: true,
 };
 
 function normalizeNumbers(list: string[]): string[] {
@@ -148,11 +171,14 @@ export class SettingsStore extends JsonFileStore<Settings> {
     this.data.awayMessage = String(this.data.awayMessage ?? "").slice(0, MAX_AWAY_MESSAGE_LENGTH);
     this.data.rideAssistantEnabled ??= true;
     this.data.rideAutoChargeEnabled ??= true;
+    this.data.rideChargeMessageEnabled ??= true;
     this.data.rideChargeMessage = String(this.data.rideChargeMessage ?? "").slice(0, MAX_RIDE_CHARGE_MESSAGE_LENGTH);
     if (!RIDE_CHARGE_TRIGGERS.includes(this.data.rideChargeTrigger)) this.data.rideChargeTrigger = "near_2min";
+    this.data.rideChargeKeyword = normalizeRideKeyword(this.data.rideChargeKeyword);
     for (const key of RIDE_MESSAGE_KEYS) this.data[key] = String(this.data[key] ?? "").slice(0, MAX_RIDE_MESSAGE_LENGTH);
     this.data.rideVehicleDetailsEnabled ??= true;
     this.data.notificationSoundEnabled ??= true;
+    this.data.groupSoundEnabled ??= true;
   }
 
   get(): Settings {
@@ -187,10 +213,12 @@ export class SettingsStore extends JsonFileStore<Settings> {
     if (input.awayMessage !== undefined) this.data.awayMessage = String(input.awayMessage).trim().slice(0, MAX_AWAY_MESSAGE_LENGTH);
     if (input.rideAssistantEnabled !== undefined) this.data.rideAssistantEnabled = !!input.rideAssistantEnabled;
     if (input.rideAutoChargeEnabled !== undefined) this.data.rideAutoChargeEnabled = !!input.rideAutoChargeEnabled;
+    if (input.rideChargeMessageEnabled !== undefined) this.data.rideChargeMessageEnabled = !!input.rideChargeMessageEnabled;
     if (input.rideChargeMessage !== undefined) this.data.rideChargeMessage = String(input.rideChargeMessage).trim().slice(0, MAX_RIDE_CHARGE_MESSAGE_LENGTH);
     if (input.rideChargeTrigger !== undefined && RIDE_CHARGE_TRIGGERS.includes(input.rideChargeTrigger)) {
       this.data.rideChargeTrigger = input.rideChargeTrigger;
     }
+    if (input.rideChargeKeyword !== undefined) this.data.rideChargeKeyword = normalizeRideKeyword(input.rideChargeKeyword);
     for (const key of RIDE_MESSAGE_KEYS) {
       const value = input[key];
       if (value === undefined) continue;
@@ -199,6 +227,7 @@ export class SettingsStore extends JsonFileStore<Settings> {
     }
     if (input.rideVehicleDetailsEnabled !== undefined) this.data.rideVehicleDetailsEnabled = !!input.rideVehicleDetailsEnabled;
     if (input.notificationSoundEnabled !== undefined) this.data.notificationSoundEnabled = !!input.notificationSoundEnabled;
+    if (input.groupSoundEnabled !== undefined) this.data.groupSoundEnabled = !!input.groupSoundEnabled;
     this.save();
     return this.data;
   }

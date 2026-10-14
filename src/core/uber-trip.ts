@@ -41,17 +41,26 @@ export function extractUberShareToken(text: string): string | null {
   return null;
 }
 
-// O jeito que o operador já combina o valor com o cliente antes de chamar o Uber: "25,00 chama ?" / "30 chama?"
-// O número tem que ser lido inteiro: sem o `(?<![\d.,])`, "25,5 chama ?" casava só o "5" e a cobrança
-// automática saía de R$ 5,00 (e "1.250,00 chama ?" saía de R$ 250,00).
-const CHAMA_PRICE_PATTERN = /(?<![\d.,])(\d{1,4}(?:[.,]\d{1,2})?)\s*chama\s*\??/i;
+// O número tem que ser lido inteiro: sem o `(?<![\d.,])`, "25,5 chama" casava só o "5" e a cobrança
+// automática saía de R$ 5,00 (e "1.250,00 chama" saía de R$ 250,00).
+const PRICE_NUMBER = String.raw`(\d{1,4}(?:[.,]\d{1,2})?)`;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 /**
- * Acha o valor de um "NN,NN chama ?" que você mandou — formato que já é usado pra combinar o preço
- * com o cliente antes de pedir o Uber, reaproveitado aqui como fonte do valor a cobrar automaticamente.
+ * Acha o valor combinado que você mandou antes de pedir o Uber, pela palavra-chave configurada (padrão
+ * "chama"): "25,00 chama", "chama 25", "30 valor", etc. — o número pode vir ANTES ou DEPOIS da palavra.
+ * Reaproveitado aqui como fonte do valor a cobrar automaticamente. Palavra vazia = usa "chama".
  */
-export function extractChamaAmountCents(text: string): number | null {
-  const match = text.match(CHAMA_PRICE_PATTERN);
+export function extractChamaAmountCents(text: string, keyword = "chama"): number | null {
+  const kw = escapeRegExp((keyword ?? "").trim() || "chama");
+  // número antes da palavra ("25,00 chama"): o número é lido inteiro (ver comentário acima)
+  const before = text.match(new RegExp(String.raw`(?<![\d.,])${PRICE_NUMBER}\s*${kw}`, "i"));
+  // número depois da palavra ("chama 25,00"): a palavra seguida do valor, sem grudar noutro número
+  const after = before ? null : text.match(new RegExp(String.raw`${kw}\s*${PRICE_NUMBER}(?![\d.,])`, "i"));
+  const match = before ?? after;
   if (!match) return null;
   return parseAmountToCents(match[1]!);
 }
@@ -69,6 +78,8 @@ export interface UberTripSnapshot {
   /** Endereço de partida e de destino da corrida, como a Uber mostra no link (null = não informado). */
   pickupAddress: string | null;
   destinationAddress: string | null;
+  /** Paradas no meio do caminho, na ordem da rota (vazio = corrida direta). */
+  stopAddresses: string[];
   /** false quando a viagem já não aparece mais na resposta (cancelada ou concluída). */
   tripExists: boolean;
 }
@@ -82,16 +93,25 @@ function waypointAddress(waypoint: Record<string, unknown> | undefined): string 
 }
 
 /**
- * Partida e destino entre os pontos da corrida. O `type` de cada ponto diz qual é qual; como os
- * valores dele não são documentados, sem um tipo reconhecido vale a ordem (o primeiro é a partida,
- * o último é o destino — paradas no meio do caminho ficam de fora).
+ * Partida, paradas e destino entre os pontos da corrida. O `type` de cada ponto diz qual é qual;
+ * como os valores dele não são documentados, sem um tipo reconhecido vale a ordem (o primeiro é a
+ * partida, o último é o destino). Tudo o que sobra no meio é parada, na ordem em que a Uber manda —
+ * inclusive pontos marcados como "desembarque" antes do último, que é como uma parada costuma vir.
  */
-function routeAddresses(waypoints: unknown): { pickupAddress: string | null; destinationAddress: string | null } {
+function routeAddresses(waypoints: unknown): Pick<UberTripSnapshot, "pickupAddress" | "destinationAddress" | "stopAddresses"> {
   const points = Array.isArray(waypoints) ? (waypoints.filter((w) => w && typeof w === "object") as Array<Record<string, unknown>>) : [];
   const typeOf = (point: Record<string, unknown>) => String(point["type"] ?? "");
   const pickup = points.find((p) => /pick|origin/i.test(typeOf(p))) ?? (points.length >= 2 ? points[0] : undefined);
-  const destination = points.findLast((p) => p !== pickup && /drop|dest/i.test(typeOf(p))) ?? (points.length >= 2 ? points[points.length - 1] : undefined);
-  return { pickupAddress: waypointAddress(pickup), destinationAddress: destination === pickup ? null : waypointAddress(destination) };
+  const lastDrop = points.findLast((p) => p !== pickup && /drop|dest/i.test(typeOf(p))) ?? (points.length >= 2 ? points[points.length - 1] : undefined);
+  const destination = lastDrop === pickup ? undefined : lastDrop;
+
+  // Só dá pra falar em "parada" quando se sabe onde a corrida começa ou termina
+  const stops = pickup || destination ? points.filter((p) => p !== pickup && p !== destination) : [];
+  return {
+    pickupAddress: waypointAddress(pickup),
+    destinationAddress: waypointAddress(destination),
+    stopAddresses: stops.map(waypointAddress).filter((address): address is string => !!address),
+  };
 }
 
 /** Lê a resposta crua do GetStatusMini. Devolve null se o formato não bate com o esperado (link inválido/expirado, erro da API, etc). */
@@ -114,6 +134,7 @@ export function parseUberStatusResponse(raw: unknown): UberTripSnapshot | null {
       vehicleDescription: null,
       pickupAddress: null,
       destinationAddress: null,
+      stopAddresses: [],
       tripExists: false,
     };
   }
@@ -138,15 +159,18 @@ export function parseUberStatusResponse(raw: unknown): UberTripSnapshot | null {
 }
 
 /**
- * Partida e destino em linhas prontas pra mandar ao cliente conferir. Null se a Uber não informou
- * nenhum dos dois.
+ * Partida, paradas e destino em linhas prontas pra mandar ao cliente conferir, na ordem da rota.
+ * Com mais de uma parada elas vão numeradas. Null se a Uber não informou partida nem destino.
  */
 export function describeRoute(snapshot: UberTripSnapshot): string | null {
+  if (!snapshot.pickupAddress && !snapshot.destinationAddress) return null;
+  const stops = snapshot.stopAddresses ?? [];
   const lines = [
     snapshot.pickupAddress ? `📍 *Partida:* ${snapshot.pickupAddress}` : null,
+    ...stops.map((address, i) => `🛑 *Parada${stops.length > 1 ? ` ${i + 1}` : ""}:* ${address}`),
     snapshot.destinationAddress ? `🏁 *Destino:* ${snapshot.destinationAddress}` : null,
   ].filter(Boolean);
-  return lines.length ? lines.join("\n") : null;
+  return lines.join("\n");
 }
 
 /**

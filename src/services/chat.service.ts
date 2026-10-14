@@ -3,8 +3,8 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import { downloadMediaMessage, generateMessageIDV2, normalizeMessageContent, toNumber } from "baileys-joss";
 import type { WASocket, WAMessage, WAMessageKey, AnyMessageContent } from "baileys-joss";
-import { ChatStore, type ChatMessageRecord, type ChatSummary, type ChatFolder } from "../core/chat-store";
-import { extractChatContent, extractRevokeKey, renderSystemText, type ChatContent, type ChatMessageType } from "../utils/chat-content";
+import { ChatStore, type ChatMessageRecord, type ChatSummary, type ChatFolder, type GlobalMessageMatch } from "../core/chat-store";
+import { extractChatContent, extractEditedText, extractMessageEdit, extractRevokeKey, renderSystemText, type ChatContent, type ChatMessageType } from "../utils/chat-content";
 import { normalizeJid, phoneFromJid } from "../utils/jid";
 import { logger } from "../utils/logger";
 import { SentMessageRegistry } from "../utils/sent-registry";
@@ -21,6 +21,8 @@ export interface OperatorMediaInput {
 /** Prévia de "em resposta a..." (quando a mensagem cita outra). */
 export interface QuotedPreview {
   id: string;
+  /** Quando a mensagem citada foi enviada — o painel usa pra carregar a página dela ao "pular até ela". */
+  timestamp: number;
   fromMe: boolean;
   pushName: string | null;
   type: ChatMessageType;
@@ -38,6 +40,15 @@ export interface MessageReaction {
 export interface ChatMessageView extends ChatMessageRecord {
   quotedPreview?: QuotedPreview | null;
   reactions?: MessageReaction[];
+}
+
+/** Uma página do histórico de uma conversa, do jeito que o painel pede (ver `ChatService.listMessagePage`). */
+export interface ChatMessagePage {
+  messages: ChatMessageView[];
+  /** Ainda existem mensagens mais antigas que as desta página? */
+  hasMore: boolean;
+  /** De onde continuar pra pedir a página seguinte (mais antiga). Null = a página veio vazia. */
+  cursor: { before: number; beforeId: string } | null;
 }
 
 /** Status que o WhatsApp manda pra mensagens que você enviou (proto.WebMessageInfo.Status). */
@@ -145,6 +156,36 @@ async function defaultDownloadMedia(msg: WAMessage, sock: WASocket): Promise<Buf
   });
 }
 
+/**
+ * Formatos que o WhatsApp toca como mensagem de áudio → o mimetype que ele espera. O que não está
+ * aqui (WAV, FLAC, WMA, AIFF...) ele não aceita como áudio: a mensagem sai daqui sem erro nenhum,
+ * mas nunca chega do outro lado.
+ */
+const WHATSAPP_AUDIO_MIMES: Record<string, string> = {
+  "audio/ogg": "audio/ogg; codecs=opus",
+  "audio/opus": "audio/ogg; codecs=opus",
+  "audio/mpeg": "audio/mpeg",
+  "audio/mp3": "audio/mpeg",
+  "audio/mp4": "audio/mp4",
+  "audio/m4a": "audio/mp4",
+  "audio/x-m4a": "audio/mp4",
+  "audio/aac": "audio/aac",
+  "audio/amr": "audio/amr",
+};
+
+/**
+ * Ajusta um anexo ao que o WhatsApp aceita. Áudio num formato que ele toca vai como mensagem de
+ * áudio, com o mimetype certo; num formato que ele não toca (WAV, por exemplo) vai como arquivo —
+ * é o que o próprio WhatsApp faz quando você anexa um arquivo desses, e a pessoa abre no player dela.
+ */
+export function normalizeOutgoingMedia(media: OperatorMediaInput): OperatorMediaInput {
+  if (media.type !== "audio") return media;
+  const base = (media.mimeType || "").split(";")[0]!.trim().toLowerCase();
+  const playable = WHATSAPP_AUDIO_MIMES[base];
+  if (playable) return { ...media, mimeType: /codecs=/i.test(media.mimeType) ? media.mimeType : playable };
+  return { ...media, type: "document", ptt: false, mimeType: media.mimeType || "application/octet-stream", fileName: media.fileName || "audio" };
+}
+
 function buildOutgoingContent(media: OperatorMediaInput, caption: string, buffer: Buffer): AnyMessageContent {
   switch (media.type) {
     case "image":
@@ -154,7 +195,7 @@ function buildOutgoingContent(media: OperatorMediaInput, caption: string, buffer
     case "audio":
       return { audio: buffer, mimetype: media.mimeType, ptt: !!media.ptt };
     case "document":
-      return { document: buffer, mimetype: media.mimeType, fileName: media.fileName || "arquivo" };
+      return { document: buffer, mimetype: media.mimeType, fileName: media.fileName || "arquivo", caption: caption || undefined };
     case "sticker":
       return { sticker: buffer };
   }
@@ -271,10 +312,41 @@ export class ChatService {
     });
   }
 
+  /**
+   * Marcações de uma mensagem que SAI pelo painel num grupo: cada "@número" no texto vira o JID da
+   * pessoa, pra o WhatsApp notificá-la e destacar o nome dela. Fora de grupo não marca ninguém.
+   */
+  private outgoingMentions(chatJid: string, text: string): string[] {
+    if (!text || !chatJid.endsWith("@g.us")) return [];
+    const jids = new Set<string>();
+    for (const [, digits] of text.matchAll(MENTION_PATTERN)) {
+      if (digits) jids.add(`${digits}@s.whatsapp.net`);
+    }
+    return [...jids];
+  }
+
+  /**
+   * Chave única de uma conversa PRIVADA: o JID de telefone (`<telefone>@s.whatsapp.net`). A mesma pessoa
+   * pode chegar ora pelo telefone, ora por `@lid` (migração de LID do WhatsApp) — isso junta tudo numa
+   * conversa só e, se já houver uma linha sob o outro JID, funde na hora. Grupo, ou pessoa sem telefone
+   * resolvível, ficam sob o JID como estavam (sem regressão).
+   */
+  canonicalPersonalJid(rawJid: string, contactJid: string | null): string {
+    if (rawJid.endsWith("@g.us")) return rawJid;
+    const raw = normalizeJid(rawJid);
+    if (!contactJid || !contactJid.endsWith("@s.whatsapp.net")) return raw;
+    const canonical = normalizeJid(contactJid);
+    if (canonical === raw) return raw;
+    if (this.store.hasChat(raw)) this.store.mergeChat(raw, canonical);
+    return canonical;
+  }
+
   /** Mensagem recebida de alguém (privado ou grupo). */
   recordIncoming(sock: WASocket, msg: WAMessage, chatJid: string, senderJid: string, isGroup: boolean): ChatMessageRecord | null {
     const revokeKey = extractRevokeKey(msg);
     if (revokeKey?.id) return this.handleRevoke(chatJid, revokeKey.id);
+    const edit = extractMessageEdit(msg);
+    if (edit) return this.handleEdit(chatJid, edit.key.id!, edit.text);
     return this.record(sock, msg, chatJid, senderJid, isGroup, false, false);
   }
 
@@ -282,6 +354,8 @@ export class ChatService {
   recordOutgoing(sock: WASocket, msg: WAMessage, chatJid: string, isGroup: boolean, isBot: boolean): ChatMessageRecord | null {
     const revokeKey = extractRevokeKey(msg);
     if (revokeKey?.id) return this.handleRevoke(chatJid, revokeKey.id);
+    const edit = extractMessageEdit(msg);
+    if (edit) return this.handleEdit(chatJid, edit.key.id!, edit.text);
     return this.record(sock, msg, chatJid, null, isGroup, true, isBot);
   }
 
@@ -292,6 +366,28 @@ export class ChatService {
     const updated = this.store.getMessage(chatJid, targetId);
     if (updated) this.options.onMessage?.(updated, false);
     return updated;
+  }
+
+  /** Edição chegando (de outro aparelho seu, ou de quem mandou a original): troca o texto e marca "editada". */
+  private handleEdit(chatJid: string, targetId: string, newText: string): ChatMessageRecord | null {
+    const changed = this.store.markEdited(chatJid, targetId, newText);
+    if (!changed) return null;
+    const updated = this.store.getMessage(chatJid, targetId);
+    if (updated) this.options.onMessage?.(updated, false);
+    return updated;
+  }
+
+  /**
+   * Edição que chegou por `messages.update` (o caminho de verdade do WhatsApp para edições — ver
+   * core/connection.ts). A `key` traz a mensagem editada e `message` o conteúdo novo.
+   */
+  applyIncomingEdit(key: WAMessageKey, message: WAMessage["message"]): ChatMessageRecord | null {
+    const chatJid = key.remoteJid;
+    const id = key.id;
+    if (!chatJid || !id) return null;
+    const text = extractEditedText(message);
+    if (text == null) return null;
+    return this.handleEdit(chatJid, id, text);
   }
 
   private record(
@@ -509,6 +605,16 @@ export class ChatService {
     return this.store.listArchivedChats();
   }
 
+  /** Contatos que você salvou, pra escolher ao começar uma conversa nova. */
+  listSavedContacts(): Array<{ jid: string; name: string }> {
+    return this.store.listSavedContacts();
+  }
+
+  /** Garante que a conversa exista no painel (cria vazia se preciso), pra abrir uma conversa nova. */
+  ensureChat(jid: string, name: string | null): void {
+    this.store.touchChat(jid, jid.endsWith("@g.us"), name);
+  }
+
   /** Galeria de mídia já baixada dessa conversa, pros "dados do contato/grupo". */
   listMediaMessages(chatJid: string): ChatMessageRecord[] {
     return this.store.listMediaMessages(chatJid);
@@ -519,8 +625,26 @@ export class ChatService {
     return this.store.groupsInCommon(participantJids);
   }
 
-  createFolder(name: string): ChatFolder {
-    return this.store.createFolder(name);
+  createFolder(name: string, id?: string): ChatFolder {
+    return this.store.createFolder(name, id);
+  }
+
+  /** Pares (lista, conversa) de tudo que está em listas neste computador. */
+  listFolderMemberships(): Array<{ folderId: string; chatJid: string }> {
+    return this.store.listFolderMemberships();
+  }
+
+  /** Troca as listas deste computador pelas compartilhadas que vieram do servidor (ver `Account.syncSharedLists`). */
+  replaceFolders(folders: Array<{ id: string; name: string; createdAt: number }>, memberships: Array<{ folderId: string; chatJid: string; addedAt: number }>): void {
+    this.store.replaceFolders(folders, memberships);
+  }
+
+  getMeta(key: string): string | null {
+    return this.store.getMeta(key);
+  }
+
+  setMeta(key: string, value: string): void {
+    this.store.setMeta(key, value);
   }
 
   deleteFolder(id: string): boolean {
@@ -571,15 +695,22 @@ export class ChatService {
     return this.store.searchMessages(chatJid, query, limit);
   }
 
+  /** Busca global: mensagens que contêm o termo em qualquer conversa (pra busca da lista estilo WhatsApp). */
+  searchAllMessages(query: string, limit?: number): GlobalMessageMatch[] {
+    return this.store.searchAllMessages(query, limit);
+  }
+
   /**
    * Mensagens prontas pra tela: reações viram um detalhe anexado à mensagem alvo (não aparecem como
    * linha própria) e citações ganham uma prévia de "em resposta a...". Só enxerga o que está dentro
    * da mesma página — uma reação cujo alvo ficou numa página mais antiga (ainda não carregada) fica
    * de fora por enquanto; ela aparece quando aquela página for carregada.
    */
-  listMessages(chatJid: string, opts?: { before?: number; limit?: number }): ChatMessageView[] {
-    const rows = this.store.listMessages(chatJid, opts);
+  listMessages(chatJid: string, opts?: { before?: number; beforeId?: string; limit?: number }): ChatMessageView[] {
+    return this.buildViews(chatJid, this.store.listMessages(chatJid, opts));
+  }
 
+  private buildViews(chatJid: string, rows: ChatMessageRecord[]): ChatMessageView[] {
     const reactionsByTarget = new Map<string, ChatMessageRecord[]>();
     const regular: ChatMessageRecord[] = [];
     for (const row of rows) {
@@ -598,7 +729,7 @@ export class ChatService {
       if (m.quotedId) {
         const quoted = this.store.getMessage(chatJid, m.quotedId);
         view.quotedPreview = quoted
-          ? { id: quoted.id, fromMe: quoted.fromMe, pushName: quoted.pushName, type: quoted.type, text: quoted.text }
+          ? { id: quoted.id, timestamp: quoted.timestamp, fromMe: quoted.fromMe, pushName: quoted.pushName, type: quoted.type, text: quoted.text }
           : null;
       }
 
@@ -624,8 +755,24 @@ export class ChatService {
    * `listMessages` com as marcações trocadas pelo nome também nas mensagens antigas, gravadas quando
    * a marcação ainda ficava só como número (as novas já são gravadas com o nome).
    */
-  async listMessagesWithMentions(chatJid: string, opts?: { before?: number; limit?: number }): Promise<ChatMessageView[]> {
-    const views = this.listMessages(chatJid, opts);
+  async listMessagesWithMentions(chatJid: string, opts?: { before?: number; beforeId?: string; limit?: number }): Promise<ChatMessageView[]> {
+    return (await this.listMessagePage(chatJid, opts)).messages;
+  }
+
+  /**
+   * Uma página do histórico pro painel, com o que ele precisa pra pedir a próxima (mais antiga).
+   *
+   * `hasMore` e `cursor` saem das linhas do banco, não do que vai pra tela: as reações viram um
+   * detalhe da mensagem alvo, então uma página "cheia" de 50 linhas chega com menos de 50 itens.
+   * Antes o painel media pelo que chegava, concluía que o histórico tinha acabado e escondia o
+   * botão de carregar mais — as mensagens antigas pareciam ter sumido, com tudo ainda guardado.
+   */
+  async listMessagePage(chatJid: string, opts?: { before?: number; beforeId?: string; limit?: number }): Promise<ChatMessagePage> {
+    const limit = opts?.limit && opts.limit > 0 ? Math.min(Math.floor(opts.limit), 200) : 50;
+    const rows = this.store.listMessages(chatJid, { before: opts?.before, beforeId: opts?.beforeId, limit });
+    const oldest = rows[rows.length - 1];
+
+    const views = this.buildViews(chatJid, rows);
     for (const view of views) {
       if (view.type === "system") continue;
       await this.warmMentions(view.text);
@@ -633,7 +780,11 @@ export class ChatService {
       if (view.text) view.text = this.withMentionNames(view.text);
       if (view.quotedPreview?.text) view.quotedPreview = { ...view.quotedPreview, text: this.withMentionNames(view.quotedPreview.text) };
     }
-    return views;
+    return {
+      messages: views,
+      hasMore: rows.length >= limit,
+      cursor: oldest ? { before: oldest.timestamp, beforeId: oldest.id } : null,
+    };
   }
 
   /** Zera o contador de não lidas (o painel chama ao abrir a conversa). */
@@ -699,6 +850,9 @@ export class ChatService {
     const isGroup = chatJid.endsWith("@g.us");
     const quoted = this.buildQuotedStanza(chatJid, input.quotedId, isGroup);
 
+    // Marcações (@número) num grupo: viram o JID da pessoa pra ela ser notificada/destacada no WhatsApp.
+    const mentions = this.outgoingMentions(chatJid, text);
+
     let mediaFile: string | null = null;
     let type: ChatMessageType = "text";
     let mediaMimeType: string | null = null;
@@ -706,15 +860,18 @@ export class ChatService {
     let isPtt = false;
 
     if (input.media) {
-      const buffer = Buffer.from(input.media.dataBase64, "base64");
-      await sock.sendMessage(chatJid, buildOutgoingContent(input.media, text, buffer), { messageId, quoted });
-      mediaFile = this.saveMediaFile(buffer, input.media.mimeType);
-      type = input.media.type;
-      mediaMimeType = input.media.mimeType;
-      mediaFileName = input.media.fileName ?? null;
-      isPtt = !!input.media.ptt;
+      const media = normalizeOutgoingMedia(input.media);
+      const buffer = Buffer.from(media.dataBase64, "base64");
+      const content = buildOutgoingContent(media, text, buffer);
+      if (mentions.length) (content as { mentions?: string[] }).mentions = mentions;
+      await sock.sendMessage(chatJid, content, { messageId, quoted });
+      mediaFile = this.saveMediaFile(buffer, media.mimeType);
+      type = media.type;
+      mediaMimeType = media.mimeType;
+      mediaFileName = media.fileName ?? null;
+      isPtt = !!media.ptt;
     } else {
-      await sock.sendMessage(chatJid, { text }, { messageId, quoted });
+      await sock.sendMessage(chatJid, mentions.length ? { text, mentions } : { text }, { messageId, quoted });
     }
 
     const stored = this.store.recordMessage(
@@ -737,7 +894,9 @@ export class ChatService {
         reactionEmoji: null,
         reactionTargetId: null,
         status: null,
-        timestamp: Date.now(),
+        // Nunca antes da última mensagem da conversa: se o relógio local estiver atrasado em relação ao
+        // do WhatsApp, a sua resposta não "sobe" por cima da mensagem que você está respondendo.
+        timestamp: Math.max(Date.now(), this.store.latestMessageTimestamp(chatJid) + 1),
       },
       this.options.resolveChatName(chatJid, isGroup, null)
     );
@@ -757,6 +916,35 @@ export class ChatService {
     return removed;
   }
 
+  /** Nome salvo de um contato (tem prioridade na hora de mostrar o nome da conversa). */
+  savedContactName(jid: string): string | null {
+    return this.store.savedContactName(jid);
+  }
+
+  /**
+   * Salva o contato: guarda o nome no painel (passa a aparecer no lugar do número) e, em melhor
+   * esforço, sincroniza com os contatos do WhatsApp desta conta (aparece no celular também).
+   */
+  async saveContact(chatJid: string, name: string): Promise<void> {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error("Informe um nome para o contato.");
+    this.store.setSavedContactName(chatJid, trimmed);
+    // Mostra o nome agora na lista, sem esperar a próxima mensagem
+    this.store.touchChat(chatJid, chatJid.endsWith("@g.us"), trimmed);
+    if (this.options.isConnected()) {
+      try {
+        await this.options.getSock().addOrEditContact(chatJid, { fullName: trimmed, firstName: trimmed, saveOnPrimaryAddressbook: true });
+      } catch (err) {
+        logger.warn({ err, chatJid }, "Não consegui salvar o contato no WhatsApp (salvo só no painel)");
+      }
+    }
+  }
+
+  /** Exclui a conversa inteira do painel (mensagens + conversa + vínculos de lista). Não mexe no WhatsApp. */
+  deleteChat(chatJid: string): void {
+    this.store.deleteChat(chatJid);
+  }
+
   /** "Apagar para todos": só pra mensagem sua, e só dentro do prazo que o WhatsApp ainda aceitar. */
   async deleteForEveryone(chatJid: string, id: string): Promise<ChatMessageRecord> {
     if (!this.options.isConnected()) throw new Error("O WhatsApp desta conta está desconectado.");
@@ -770,6 +958,27 @@ export class ChatService {
     await sock.sendMessage(chatJid, { delete: key });
 
     this.store.markRevoked(chatJid, id);
+    const updated = this.store.getMessage(chatJid, id)!;
+    this.options.onMessage?.(updated, false);
+    return updated;
+  }
+
+  /** "Editar": troca o texto de uma mensagem SUA de texto, igual ao WhatsApp (dentro do prazo que ele aceitar). */
+  async editForEveryone(chatJid: string, id: string, newText: string): Promise<ChatMessageRecord> {
+    const text = newText.trim();
+    if (!text) throw new Error("A mensagem editada não pode ficar vazia.");
+    if (!this.options.isConnected()) throw new Error("O WhatsApp desta conta está desconectado.");
+    const target = this.store.getMessage(chatJid, id);
+    if (!target) throw new Error("Mensagem não encontrada.");
+    if (!target.fromMe) throw new Error("Só é possível editar uma mensagem enviada por você.");
+    if (target.type !== "text") throw new Error("Só dá para editar mensagens de texto.");
+
+    const sock = this.options.getSock();
+    const isGroup = chatJid.endsWith("@g.us");
+    const key: WAMessageKey = { remoteJid: chatJid, id, fromMe: true, participant: isGroup ? (sock.user?.id ?? undefined) : undefined };
+    await sock.sendMessage(chatJid, { text, edit: key });
+
+    this.store.markEdited(chatJid, id, text);
     const updated = this.store.getMessage(chatJid, id)!;
     this.options.onMessage?.(updated, false);
     return updated;
@@ -861,7 +1070,8 @@ export class ChatService {
         reactionEmoji: null,
         reactionTargetId: null,
         status: null,
-        timestamp: Date.now(),
+        // Entra depois da última mensagem da conversa de destino (mesmo motivo do envio normal).
+        timestamp: Math.max(Date.now(), this.store.latestMessageTimestamp(targetChatJid) + 1),
       },
       this.options.resolveChatName(targetChatJid, isGroup, null)
     );

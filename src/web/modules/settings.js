@@ -7,6 +7,7 @@ import { icon, notify, bindModal, openModal, closeModal, flagInvalid, setBusy, e
 const settingsBtn = document.getElementById("settings-btn");
 const settingsModal = document.getElementById("settings-modal");
 const settingsNotificationSoundInput = document.getElementById("settings-notification-sound");
+const settingsGroupSoundInput = document.getElementById("settings-group-sound");
 const settingsIgnoreAdmInput = document.getElementById("settings-ignore-adm");
 const settingsNoReplyNumbersInput = document.getElementById("settings-no-reply-numbers");
 const settingsIgnoreDddsEnabledInput = document.getElementById("settings-ignore-ddds-enabled");
@@ -143,6 +144,14 @@ async function loadMisticConfig() {
 
   const cfg = await api("/mistic/config");
   misticConfig = cfg;
+
+  // Funcionário de empresa: a MisticPay é a do líder (no servidor). Esconde credenciais e o liga/desliga;
+  // sobram mensagens, CPF padrão, botão flutuante e a senha de saque (que vai pro servidor ao salvar).
+  const employee = !!cfg.employee;
+  document.getElementById("mistic-employee-note")?.classList.toggle("hidden", !employee);
+  document.getElementById("mistic-enabled-row")?.classList.toggle("hidden", employee);
+  document.getElementById("mistic-credentials-box")?.classList.toggle("hidden", employee);
+
   mistic.enabled.checked = cfg.enabled;
   mistic.clientId.value = cfg.clientId;
   mistic.clientSecret.value = "";
@@ -191,11 +200,14 @@ function collectMisticPayload() {
   if (header) payload.authHeader = header;
   else if (clearAuthHeader) payload.authHeader = null;
 
-  const newWithdrawPassword = mistic.withdrawPasswordNew.value;
-  if (clearWithdrawPassword) payload.withdrawPassword = null;
-  else if (newWithdrawPassword) payload.withdrawPassword = newWithdrawPassword;
-  if (misticConfig?.hasWithdrawPassword && (clearWithdrawPassword || newWithdrawPassword)) {
-    payload.currentWithdrawPassword = mistic.withdrawPasswordCurrent.value;
+  // Funcionário de empresa: a senha de saque é guardada no servidor (ver saveSettings), não vai aqui.
+  if (!misticConfig?.employee) {
+    const newWithdrawPassword = mistic.withdrawPasswordNew.value;
+    if (clearWithdrawPassword) payload.withdrawPassword = null;
+    else if (newWithdrawPassword) payload.withdrawPassword = newWithdrawPassword;
+    if (misticConfig?.hasWithdrawPassword && (clearWithdrawPassword || newWithdrawPassword)) {
+      payload.currentWithdrawPassword = mistic.withdrawPasswordCurrent.value;
+    }
   }
 
   return payload;
@@ -256,6 +268,7 @@ export async function openSettingsModal({ tab = "general" } = {}) {
   try {
     const settings = await api("/settings");
     settingsNotificationSoundInput.checked = settings.notificationSoundEnabled !== false;
+    settingsGroupSoundInput.checked = settings.groupSoundEnabled !== false;
     settingsIgnoreAdmInput.checked = settings.ignoreAdminNames;
     settingsNoReplyNumbersInput.value = settings.noReplyNumbers.join("\n");
     settingsIgnoreDddsEnabledInput.checked = !!settings.ignoreGroupDddsEnabled;
@@ -290,6 +303,7 @@ export async function openSettingsModal({ tab = "general" } = {}) {
 
 export async function saveSettings() {
   const notificationSoundEnabled = settingsNotificationSoundInput.checked;
+  const groupSoundEnabled = settingsGroupSoundInput.checked;
   const ignoreAdminNames = settingsIgnoreAdmInput.checked;
   const noReplyNumbers = settingsNoReplyNumbersInput.value
     .split("\n")
@@ -327,6 +341,7 @@ export async function saveSettings() {
       method: "PUT",
       body: {
         notificationSoundEnabled,
+        groupSoundEnabled,
         ignoreAdminNames,
         noReplyNumbers,
         ignoreGroupDddsEnabled,
@@ -340,6 +355,13 @@ export async function saveSettings() {
     // Só envia a MisticPay se ela foi carregada (senão um erro de leitura apagaria a configuração)
     if (misticConfig) {
       await api("/mistic/config", { method: "PUT", body: collectMisticPayload() });
+      // Funcionário: a senha de saque vai pro servidor do líder (não fica no computador dele).
+      if (misticConfig.employee && (clearWithdrawPassword || mistic.withdrawPasswordNew.value)) {
+        await api("/mistic/withdraw-password", {
+          method: "POST",
+          body: { password: clearWithdrawPassword ? null : mistic.withdrawPasswordNew.value, currentPassword: mistic.withdrawPasswordCurrent.value || undefined },
+        });
+      }
       document.dispatchEvent(new CustomEvent("mistic-config-changed"));
       // Não deixa a senha de saque (nem a tentativa de troca) sobrando na tela depois de salvar
       clearWithdrawPassword = false;

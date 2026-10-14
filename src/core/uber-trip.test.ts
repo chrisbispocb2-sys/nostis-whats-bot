@@ -12,6 +12,7 @@ function snapshot(overrides: Partial<UberTripSnapshot> = {}): UberTripSnapshot {
     vehicleDescription: null,
     pickupAddress: null,
     destinationAddress: null,
+    stopAddresses: [],
     tripExists: true,
     ...overrides,
   };
@@ -65,6 +66,21 @@ describe("extractChamaAmountCents", () => {
     expect(extractChamaAmountCents("Oi, tudo bem?")).toBeNull();
     expect(extractChamaAmountCents("25,00")).toBeNull();
   });
+
+  test("número depois da palavra também vale ('chama 25,00')", () => {
+    expect(extractChamaAmountCents("chama 25,00")).toBe(2500);
+    expect(extractChamaAmountCents("fica em chama 30")).toBe(3000);
+  });
+
+  test("palavra-chave configurável: usa a palavra escolhida (antes ou depois); a antiga não casa mais", () => {
+    expect(extractChamaAmountCents("30 valor", "valor")).toBe(3000);
+    expect(extractChamaAmountCents("valor 30,50", "valor")).toBe(3050);
+    expect(extractChamaAmountCents("25,00 chama", "valor")).toBeNull();
+    // palavra vazia cai no padrão 'chama'
+    expect(extractChamaAmountCents("25,00 chama", "")).toBe(2500);
+    // caracteres especiais de regex na palavra não quebram
+    expect(extractChamaAmountCents("40 R$+", "R$+")).toBe(4000);
+  });
 });
 
 describe("describeRide", () => {
@@ -109,8 +125,41 @@ describe("parseUberStatusResponse", () => {
       vehicleDescription: "Cinza Nissan Versa",
       pickupAddress: null,
       destinationAddress: null,
+      stopAddresses: [],
       tripExists: true,
     });
+  });
+
+  test("corrida com parada: os pontos do meio viram paradas, na ordem da rota", () => {
+    const withWaypoints = (waypoints: unknown) => parseUberStatusResponse({ data: { status: { trips: [{ clientStatus: "ArrivingAtPickup", waypoints }] } } });
+
+    // tipos reconhecidos: a parada vem como um "desembarque" antes do último
+    expect(
+      withWaypoints([
+        { title: "Coronel França Leite, 930", type: "PICKUP" },
+        { title: "Av. Antônio Sebastião de Santana, 34", type: "DROPOFF" },
+        { title: "São Januário", subtitle: "Barreira do Vasco", type: "DROPOFF" },
+      ])
+    ).toMatchObject({
+      pickupAddress: "Coronel França Leite, 930",
+      stopAddresses: ["Av. Antônio Sebastião de Santana, 34"],
+      destinationAddress: "São Januário, Barreira do Vasco",
+    });
+
+    // sem tipo reconhecido: vale a ordem, e duas paradas continuam na ordem
+    expect(withWaypoints([{ title: "A" }, { title: "P1" }, { title: "P2" }, { title: "B" }])).toMatchObject({ pickupAddress: "A", stopAddresses: ["P1", "P2"], destinationAddress: "B" });
+
+    // corrida direta, e ponto sem endereço no meio: nenhuma parada
+    expect(withWaypoints([{ title: "A" }, { title: "B" }])).toMatchObject({ stopAddresses: [] });
+    expect(withWaypoints([{ title: "A" }, { type: "X" }, { title: "B" }])).toMatchObject({ stopAddresses: [] });
+    expect(withWaypoints([{ title: "A" }])).toMatchObject({ stopAddresses: [] });
+  });
+
+  test("describeRoute com paradas: entram entre a partida e o destino (numeradas se forem várias)", () => {
+    expect(describeRoute(snapshot({ pickupAddress: "A", stopAddresses: ["P1"], destinationAddress: "B" }))).toBe("📍 *Partida:* A\n🛑 *Parada:* P1\n🏁 *Destino:* B");
+    expect(describeRoute(snapshot({ pickupAddress: "A", stopAddresses: ["P1", "P2"], destinationAddress: "B" }))).toBe(
+      "📍 *Partida:* A\n🛑 *Parada 1:* P1\n🛑 *Parada 2:* P2\n🏁 *Destino:* B"
+    );
   });
 
   test("endereços de partida e destino (waypoints): pelo tipo do ponto, ou pela ordem quando o tipo não é reconhecido", () => {

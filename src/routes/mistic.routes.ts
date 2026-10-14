@@ -61,7 +61,14 @@ export async function handleMisticRoutes(
 
   try {
     if (url.pathname === "/mistic/config" && req.method === "GET") {
-      return Response.json(misticSettings.publicView());
+      const view = misticSettings.publicView();
+      // Funcionário de empresa: a MisticPay é a do líder (no servidor). O painel trata como "configurada"
+      // e sabe que é funcionário (esconde credenciais, mostra o saldo virtual e roteia a senha de saque).
+      if (mistic.employeeMode) {
+        const status = await mistic.employeeStatus().catch(() => null);
+        return Response.json({ ...view, employee: true, configured: true, hasWithdrawPassword: status?.hasWithdrawPassword ?? false, withdrawBlocked: status?.withdrawBlocked ?? false });
+      }
+      return Response.json(view);
     }
 
     if (url.pathname === "/mistic/config" && req.method === "PUT") {
@@ -124,6 +131,19 @@ export async function handleMisticRoutes(
     if (url.pathname === "/mistic/withdraw" && req.method === "POST") {
       const record = await mistic.withdraw(await readBody<WithdrawRequest>(req));
       return Response.json({ withdrawal: record });
+    }
+
+    // Funcionário de empresa: situação do dinheiro dele (saldo virtual, bloqueio do líder, senha de saque).
+    if (url.pathname === "/mistic/employee" && req.method === "GET") {
+      if (!mistic.employeeMode) return Response.json({ employee: false });
+      return Response.json({ employee: true, ...(await mistic.employeeStatus()) });
+    }
+
+    // Cria/troca/remove a senha de saque (funcionário → servidor do líder; conta normal → local).
+    if (url.pathname === "/mistic/withdraw-password" && req.method === "POST") {
+      const body = await readBody<{ password?: string | null; currentPassword?: string }>(req);
+      await mistic.setWithdrawPassword(body.password === null ? null : String(body.password ?? ""), body.currentPassword);
+      return Response.json({ ok: true });
     }
   } catch (err) {
     return errorResponse(err);

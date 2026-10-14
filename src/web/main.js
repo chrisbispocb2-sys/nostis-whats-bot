@@ -13,7 +13,9 @@ import { initSidebarResizer } from "./modules/sidebar.js";
 import { refreshChat, initChat, resetChat } from "./modules/chat.js";
 import { initContextMenu } from "./modules/context-menu.js";
 import { guardAuth, initAccessControl, applyFeatureLocks, refreshUsersIfAdmin } from "./modules/auth.js";
+import { initCompanyPanel, refreshEmployeesIfLeader } from "./modules/company.js";
 import { setPayToken } from "./modules/api.js";
+import { initMultiScreen } from "./modules/multiscreen.js";
 
 /* ---------- Abas (Regras / Propaganda / Métricas) ---------- */
 
@@ -125,6 +127,47 @@ function startPayWindow() {
   setInterval(refreshPay, 3000);
 }
 
+/**
+ * Modo embutido do multi telas: este mesmo painel, mas scoped a UMA conta e só o chat (estilo
+ * celular). Cada fração do multi telas é um <iframe src="/?screen=<conta>"> rodando este caminho.
+ * Autentica pelo mesmo cookie de sessão (herdado do painel pai, mesma origem).
+ */
+async function startScreen(accountId) {
+  document.body.classList.add("screen-only");
+  const { blocked } = await guardAuth();
+  if (blocked) return;
+
+  initContextMenu();
+  try {
+    await loadAccounts();
+  } catch (err) {
+    console.error("loadAccounts (screen) falhou:", err);
+  }
+  // A conta desta fração manda — ignora a última conta usada que o loadAccounts escolheu.
+  state.activeAccountId = accountId;
+  document.getElementById("chat-panel")?.classList.remove("hidden");
+
+  applyFeatureLocks();
+  initStickers();
+  initPay();
+  initChat(); // o próprio chat cuida do polling/WebSocket desta conta
+  // resetChat() faz a carga inicial do chat (respostas rápidas, tempo real, status da MisticPay) — sem
+  // ele, a barra de respostas rápidas, o botão de resposta rápida e o "enviar variante" não aparecem.
+  resetChat();
+  refreshChat();
+
+  every(2000, refreshStatus); // mantém o status atualizado (reconexão)
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshChat();
+  });
+}
+
+function every(ms, fn) {
+  setInterval(() => {
+    if (!document.hidden) fn();
+  }, ms);
+}
+
 function startPanel() {
   /* ---------- Módulos ---------- */
 
@@ -139,8 +182,10 @@ function startPanel() {
   initSettings();
   initPay();
   initChat();
+  initMultiScreen();
   initSidebarResizer();
   initAccessControl();
+  initCompanyPanel();
   applyFeatureLocks();
 
   /* ---------- Carga inicial ---------- */
@@ -158,12 +203,6 @@ function startPanel() {
 
   /* ---------- Polling em segundo plano (pausa com a aba escondida) ---------- */
 
-  function every(ms, fn) {
-    setInterval(() => {
-      if (!document.hidden) fn();
-    }, ms);
-  }
-
   every(2000, refreshStatus);
   every(3000, refreshAccounts);
   every(3000, refreshPay);
@@ -171,6 +210,7 @@ function startPanel() {
   every(10000, refreshGroups);
   every(5000, refreshLeads); // as métricas acompanham os pagamentos sozinhas
   every(20000, refreshUsersIfAdmin); // "quem está online" no painel de administração
+  every(20000, refreshEmployeesIfLeader); // "quem está online" no painel do líder
 
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
@@ -181,6 +221,7 @@ function startPanel() {
       refreshGroups();
       refreshLeads();
       refreshUsersIfAdmin();
+      refreshEmployeesIfLeader();
     }
   });
 }
@@ -190,6 +231,13 @@ function startPanel() {
   // sessão) — não passa pela tela de login, que exigiria logar de novo toda vez que ela abre.
   if (params.get("pay") === "1") {
     startPayWindow();
+    return;
+  }
+
+  // Fração do multi telas: painel embutido scoped a uma conta (só o chat, estilo celular).
+  const screenAccount = params.get("screen");
+  if (screenAccount) {
+    await startScreen(screenAccount);
     return;
   }
 

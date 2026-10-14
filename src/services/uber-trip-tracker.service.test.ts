@@ -193,6 +193,24 @@ describe("UberTripTrackerService", () => {
       await wait(30);
       expect(charges).toEqual(["CHAT"]);
     });
+
+    test("'on_trip': não cobra ao chegar, só depois do embarque (corrida iniciada)", async () => {
+      const { fetcher } = fakeFetcher([statusResponse("ArrivingAtPickup", { eta: 0 }), statusResponse("OnTrip")]);
+      const charges: string[] = [];
+      const svc = makeService({
+        openStatusFetcher: async () => fetcher,
+        chargeTrigger: () => "on_trip",
+        onCharge: (chatJid) => {
+          charges.push(chatJid);
+        },
+      });
+
+      await svc.startTracking("CHAT", "TOKEN1", 2500);
+      expect(charges).toEqual([]); // primeira leitura: chegou, mas ainda não embarcou
+
+      await wait(60); // próxima leitura: OnTrip (embarcou)
+      expect(charges).toEqual(["CHAT"]);
+    });
   });
 
   test("a 1 min do local de partida: dispara onNearPickup1Min uma vez", async () => {
@@ -418,6 +436,59 @@ describe("UberTripTrackerService", () => {
     expect(second.isClosed()).toBe(false);
   });
 
+  describe("abrir o navegador: tenta de novo e abre em fila (pra não derrubar vários links)", () => {
+    test("falha nas primeiras tentativas e dá certo depois: acompanha mesmo assim", async () => {
+      const { fetcher } = fakeFetcher([statusResponse("Looking")]);
+      let calls = 0;
+      const svc = makeService({
+        openRetries: 3,
+        openRetryDelayMs: 5,
+        openStatusFetcher: async () => {
+          calls++;
+          if (calls < 3) throw new Error("Chrome não subiu a tempo");
+          return fetcher;
+        },
+      });
+
+      await svc.startTracking("CHAT", "TOKEN1", 1000);
+      expect(calls).toBe(3);
+      expect(svc.isTracking("CHAT")).toBe(true);
+    });
+
+    test("falha em TODAS as tentativas: propaga o erro (quem chama avisa pra cobrar na mão) e não fica acompanhando", async () => {
+      const svc = makeService({
+        openRetries: 2,
+        openRetryDelayMs: 5,
+        openStatusFetcher: async () => {
+          throw new Error("sem navegador");
+        },
+      });
+
+      await expect(svc.startTracking("CHAT", "TOKEN1", 1000)).rejects.toThrow(/sem navegador/);
+      expect(svc.isTracking("CHAT")).toBe(false);
+    });
+
+    test("serializa: com concorrência 1, nunca abre dois navegadores ao mesmo tempo", async () => {
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const svc = makeService({
+        openConcurrency: 1,
+        openStatusFetcher: async () => {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await wait(20);
+          inFlight--;
+          return fakeFetcher([statusResponse("Looking")]).fetcher;
+        },
+      });
+
+      await Promise.all([svc.startTracking("A", "T1", null), svc.startTracking("B", "T2", null)]);
+      expect(maxInFlight).toBe(1);
+      expect(svc.isTracking("A")).toBe(true);
+      expect(svc.isTracking("B")).toBe(true);
+    });
+  });
+
   describe("o mesmo link avisado duas vezes (painel + eco do WhatsApp)", () => {
     test("não reinicia o acompanhamento nem cobra de novo com o gatilho 'on_link'", async () => {
       const { fetcher } = fakeFetcher([statusResponse("Looking")]);
@@ -474,6 +545,7 @@ describe("UberTripTrackerService", () => {
       });
 
       const starting = svc.startTracking("CHAT", "TOKEN1", 2500);
+      await wait(5); // deixa a abertura do navegador começar de verdade
       svc.stopTracking("CHAT");
       await starting;
 

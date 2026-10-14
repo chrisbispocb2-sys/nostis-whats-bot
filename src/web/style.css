@@ -1078,6 +1078,9 @@ input[type="checkbox"]:focus-visible { outline: none; box-shadow: 0 0 0 3px var(
 
 /* MisticPay: botão flutuante, modal de cobrança e abas das configurações */
 .settings-section { display: flex; flex-direction: column; gap: 14px; }
+/* Dentro de uma aba (Administração, Minha equipe), a seção marcada com .scroll ocupa o espaço restante
+   e rola sozinha — senão listas grandes (ex.: muitos usuários) transbordam sem barra de rolagem. */
+.settings-section.scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 4px; }
 
 .pay-fab {
   position: fixed; right: 28px; bottom: 28px; z-index: 90;
@@ -1696,6 +1699,10 @@ img.camp-thumb {
 .auth-icon { color: var(--text-dim); background: var(--surface-2); }
 .auth-form { display: flex; flex-direction: column; gap: 14px; width: 100%; text-align: left; }
 .auth-error { color: #fca5a5; }
+/* Troca entre "Entrar" e "Criar conta com convite", logo abaixo do formulário */
+.auth-alt { margin: 14px 0 0; font-size: 13px; color: var(--text-muted); text-align: center; }
+.auth-link { background: none; border: 0; padding: 0; font: inherit; color: var(--primary-text); cursor: pointer; text-decoration: underline; }
+.auth-link:hover { opacity: .85; }
 .stack-item.is-muted { opacity: .55; }
 
 /* Funcionalidade sem acesso liberado: a aba/seção continua visível, só o conteúdo fica coberto */
@@ -1861,6 +1868,21 @@ img.camp-thumb {
   overflow-y: auto;
 }
 .chat-list li { position: relative; }
+
+/* Busca estilo WhatsApp: cabeçalho de seção + linha de aviso (vazio/buscando) */
+.chat-search-section {
+  padding: 12px 14px 4px;
+  font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-dim);
+}
+.chat-search-note {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px 12px;
+  font-size: 13px; color: var(--text-dim);
+}
+/* Durante a busca, as linhas de navegação (Arquivadas / listas) somem, igual ao WhatsApp */
+.chat-list-pane.is-searching #chat-nav-rows { display: none; }
+
 .chat-list-item {
   position: relative;
   display: flex; align-items: center; gap: 12px;
@@ -2220,7 +2242,63 @@ button.chat-join-request:focus-visible { outline: 2px solid var(--primary-ring);
   flex-shrink: 0;
 }
 .chat-compose > .icon-btn { width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0; align-self: flex-end; }
-.chat-compose-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.chat-compose-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; position: relative; }
+
+/* Popup de marcação (@) em grupo: aparece logo acima do campo de digitação. */
+.chat-mention-popup {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.18));
+  padding: 4px;
+  z-index: 30;
+}
+.chat-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+.chat-mention-item:hover,
+.chat-mention-item.is-active { background: var(--surface-2); }
+.chat-mention-item .chat-mention-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-mention-item .chat-mention-phone { margin-left: auto; color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
+
+/* Modal "nova conversa" */
+.new-chat-self {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-1);
+  cursor: pointer;
+  color: inherit;
+  font-weight: 600;
+}
+.new-chat-self:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.new-chat-self-icon { display: inline-flex; width: 36px; height: 36px; border-radius: 50%; align-items: center; justify-content: center; background: var(--brand-soft, var(--surface-2)); color: var(--brand, inherit); flex-shrink: 0; }
+.new-chat-phone { display: flex; align-items: flex-end; gap: 10px; margin-top: 14px; }
+.new-chat-phone .field { flex: 1; min-width: 0; }
+.new-chat-contacts-label { margin-top: 16px; margin-bottom: 8px; font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.new-chat-contact-list { max-height: 260px; overflow-y: auto; }
+.new-chat-contact-list .stack-item { cursor: pointer; }
+.new-chat-contact-list .stack-item:hover { border-color: var(--border-strong); background: var(--surface-2); }
 textarea.chat-input-textarea {
   resize: none;
   min-height: 40px;
@@ -2436,6 +2514,9 @@ textarea.chat-input-textarea {
 .chat-quote strong { font-size: 11.5px; color: var(--primary-text); }
 .chat-bubble-row.is-mine .chat-quote strong { color: rgba(255, 255, 255, .9); }
 .chat-quote span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .85; }
+/* Citação clicável: leva até a mensagem original (igual ao WhatsApp). */
+.chat-quote.is-clickable { cursor: pointer; transition: background .15s var(--ease); }
+.chat-quote.is-clickable:hover { background: rgba(0, 0, 0, .3); }
 
 /* Reações (emoji) sobre o canto da bolha */
 .chat-bubble-reactions {
@@ -2538,6 +2619,11 @@ textarea.chat-input-textarea {
   white-space: pre-wrap;
 }
 
+.contact-info-desc-edit { display: flex; margin: -6px auto 12px; }
+.contact-info-desc-editor { display: flex; flex-direction: column; gap: 8px; padding: 0 0 14px; }
+.contact-info-desc-editor textarea { resize: vertical; min-height: 96px; font-size: 13px; }
+.contact-info-desc-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
 .contact-info-section { margin: 0 -24px; padding: 14px 24px 18px; border-top: 1px solid var(--border); }
 .contact-info-section-head {
   display: flex; align-items: center; gap: 8px;
@@ -2546,6 +2632,16 @@ textarea.chat-input-textarea {
 }
 .contact-info-section-head .icon { width: 16px; height: 16px; }
 .contact-info-section-head strong { margin-left: auto; font-weight: 600; color: var(--text-dim); }
+
+/* Cobrar este cliente (dados do contato) */
+.contact-info-charge-form { display: flex; align-items: stretch; gap: 8px; }
+.contact-info-charge-input { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; }
+.contact-info-charge-prefix {
+  position: absolute; left: 12px;
+  font-size: 13px; font-weight: 600; color: var(--text-dim); pointer-events: none;
+}
+.contact-info-charge-input .input { padding-left: 34px; width: 100%; }
+.contact-info-charge-form .btn { flex-shrink: 0; white-space: nowrap; }
 
 .contact-info-media-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
 .contact-info-media-thumb {
@@ -2621,3 +2717,64 @@ textarea.chat-input-textarea {
   .chat-list-pane { width: 100% !important; }
   .chat-list-resizer { display: none; }
 }
+
+/* ============ Multi telas (WhatsApps lado a lado) ============ */
+.multiscreen-grid {
+  flex: 1; min-height: 0;
+  display: flex; gap: 10px;
+}
+.multiscreen-pane {
+  flex: 1 1 0; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.multiscreen-pane-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+.multiscreen-pane-name { font-weight: 600; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.multiscreen-pane-close { margin-left: auto; flex-shrink: 0; }
+.multiscreen-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); }
+
+/* Botão de 3 pontinhos sobre a foto de cada conta (barra lateral) */
+.account-item { position: relative; }
+.account-menu-btn {
+  position: absolute; top: -3px; left: -3px; z-index: 3;
+  width: 20px; height: 20px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--surface-3); color: var(--text);
+  opacity: 0; transition: opacity .12s;
+  cursor: pointer;
+}
+.account-menu-btn .icon { width: 13px; height: 13px; }
+.account-item:hover .account-menu-btn,
+.account-item:focus-within .account-menu-btn,
+.account-menu-btn.is-open { opacity: 1; }
+
+/* ============ Modo embutido: uma conta por fração do multi telas (?screen=) ============ */
+body.screen-only #account-rail,
+body.screen-only #sidebar,
+body.screen-only #panel-resizer,
+body.screen-only #sidebar-scrim,
+body.screen-only .topbar,
+body.screen-only .tabs,
+body.screen-only #offline-banner { display: none !important; }
+body.screen-only .layout { display: flex; }
+body.screen-only .main { flex: 1; min-height: 0; padding: 0; gap: 0; }
+body.screen-only .tab-panel:not(#chat-panel) { display: none !important; }
+/* Força o layout "celular" em qualquer largura (igual ao @media max-width:900px) */
+body.screen-only .chat-layout.is-showing-thread .chat-list-pane,
+body.screen-only .chat-layout.is-showing-thread .chat-rides,
+body.screen-only .chat-layout.is-showing-thread .chat-list-resizer { display: none; }
+body.screen-only .chat-layout:not(.is-showing-thread) .chat-thread-pane { display: none; }
+body.screen-only .chat-list-pane { width: 100% !important; }
+body.screen-only .chat-list-resizer { display: none; }
+body.screen-only .only-mobile { display: inline-grid; }

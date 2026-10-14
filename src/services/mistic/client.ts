@@ -111,6 +111,19 @@ export interface Statement {
   total: number;
 }
 
+/**
+ * As operações de rede da MisticPay que o `MisticService` usa. O `MisticClient` (abaixo) fala direto
+ * com a MisticPay; o funcionário de uma empresa usa outra implementação que pede ao servidor de
+ * licenças (ver core/remote-auth-service.ts), porque as credenciais do líder ficam só lá.
+ */
+export interface MisticGateway {
+  getUserInfo(): Promise<MisticUserInfo>;
+  listTransactions(page?: number, status?: string): Promise<Statement>;
+  createDeposit(input: DepositInput): Promise<DepositResult>;
+  checkTransaction(transactionId: string): Promise<CheckResult>;
+  withdraw(input: WithdrawInput): Promise<WithdrawResult>;
+}
+
 type Json = Record<string, any>;
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -119,7 +132,7 @@ function str(value: unknown): string {
   return value === null || value === undefined ? "" : String(value);
 }
 
-export class MisticClient {
+export class MisticClient implements MisticGateway {
   constructor(
     private readonly getCredentials: () => MisticCredentials,
     private readonly fetchImpl: typeof fetch = fetch,

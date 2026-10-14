@@ -41,6 +41,8 @@
     <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></symbol>
     <symbol id="i-reply" viewBox="0 0 24 24"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></symbol>
     <symbol id="i-smartphone" viewBox="0 0 24 24"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></symbol>
+<symbol id="i-phone" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></symbol>
+<symbol id="i-video" viewBox="0 0 24 24"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></symbol>
     <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
     <symbol id="i-dollar" viewBox="0 0 24 24"><line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></symbol>
     <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
@@ -189,6 +191,10 @@
             <svg class="icon"><use href="#i-sliders"/></svg>
           </button>
 
+          <a id="update-btn" class="btn btn-primary btn-sm hidden" href="#" target="_blank" rel="noopener noreferrer" title="Baixar a nova versão do programa">
+            <svg class="icon"><use href="#i-download"/></svg> <span id="update-btn-label">Baixar atualização</span>
+          </a>
+
           <button id="redeem-key-btn" class="icon-btn hidden" type="button" title="Resgatar chave de renovação" aria-label="Resgatar chave de renovação">
             <svg class="icon"><use href="#i-link"/></svg>
           </button>
@@ -226,6 +232,9 @@
         </button>
         <button class="tab-btn" role="tab" id="tab-chat" aria-selected="false" aria-controls="chat-panel" data-tab="chat-panel" type="button">
           <svg class="icon"><use href="#i-message"/></svg> Conversas
+        </button>
+        <button class="tab-btn hidden" role="tab" id="tab-company" aria-selected="false" aria-controls="company-panel" data-tab="company-panel" type="button">
+          <svg class="icon"><use href="#i-users"/></svg> Minha equipe
         </button>
         <button class="tab-btn hidden" role="tab" id="tab-access" aria-selected="false" aria-controls="access-panel" data-tab="access-panel" type="button">
           <svg class="icon"><use href="#i-users"/></svg> Administração
@@ -323,6 +332,7 @@
 
       <!-- Conversas -->
       <section id="chat-panel" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-chat">
+        <div id="multiscreen-grid" class="multiscreen-grid hidden"></div>
         <div id="chat-layout" class="chat-layout">
           <nav id="chat-rides" class="chat-rides hidden" aria-label="Corridas em acompanhamento"></nav>
           <aside class="chat-list-pane">
@@ -331,6 +341,9 @@
                 <svg class="icon"><use href="#i-chevron-left"/></svg>
               </button>
               <h2 id="chat-list-title">Conversas</h2>
+              <button id="chat-new-conversation-btn" class="icon-btn" type="button" aria-label="Nova conversa" title="Começar uma conversa nova">
+                <svg class="icon"><use href="#i-pencil"/></svg>
+              </button>
               <button id="chat-mark-all-read-btn" class="icon-btn" type="button" aria-label="Marcar todas como lidas" title="Marcar todas as conversas como lidas">
                 <svg class="icon"><use href="#i-check-check"/></svg>
               </button>
@@ -381,6 +394,9 @@
                     <strong id="chat-thread-name"></strong>
                     <span id="chat-thread-sub" class="chat-thread-sub"></span>
                   </div>
+                </button>
+                <button id="chat-call-btn" class="icon-btn" type="button" aria-label="Ligar para o cliente" title="Ligar para o cliente (cria um link de chamada)">
+                  <svg class="icon"><use href="#i-phone"/></svg>
                 </button>
                 <button id="chat-search-btn" class="icon-btn" type="button" aria-label="Buscar nesta conversa" title="Buscar nesta conversa">
                   <svg class="icon"><use href="#i-search"/></svg>
@@ -445,6 +461,7 @@
                   <svg class="icon"><use href="#i-sticker"/></svg>
                 </button>
                 <div class="chat-compose-main">
+                  <div id="chat-mention-popup" class="chat-mention-popup hidden" role="listbox" aria-label="Marcar participante"></div>
                   <div id="chat-attachment-chip" class="chat-attachment-chip hidden">
                     <img id="chat-attachment-thumb-img" class="chat-attachment-thumb hidden" alt="Pré-visualização da imagem">
                     <video id="chat-attachment-thumb-video" class="chat-attachment-thumb hidden" muted playsinline controls preload="metadata"></video>
@@ -478,6 +495,7 @@
           <label><input type="radio" name="access-tab" value="users" checked><span>Usuários</span></label>
           <label><input type="radio" name="access-tab" value="invites"><span>Convites</span></label>
           <label><input type="radio" name="access-tab" value="keys"><span>Chaves de renovação</span></label>
+          <label><input type="radio" name="access-tab" value="release"><span>Atualização</span></label>
         </div>
 
         <div id="access-section-users" class="settings-section scroll">
@@ -492,6 +510,7 @@
                 <label for="new-invite-role">Papel</label>
                 <select id="new-invite-role" class="select">
                   <option value="operator">Operador</option>
+                  <option value="leader">Líder</option>
                   <option value="admin">Administrador</option>
                 </select>
               </div>
@@ -520,6 +539,119 @@
           </div>
           <ul id="access-keys-list" class="stack-list"></ul>
         </div>
+
+        <div id="access-section-release" class="settings-section scroll hidden">
+          <div class="panel-box">
+            <h3>Atualização do app</h3>
+            <p class="hint">Publique o link da nova versão. Quem estiver numa versão diferente vê um botão <strong>“Baixar atualização”</strong> no topo do painel; quem já atualizou, não. Este programa está na versão <strong id="release-current-version">—</strong>.</p>
+            <p id="release-status" class="hint"></p>
+            <div class="field-row">
+              <div class="field">
+                <label for="release-version">Versão</label>
+                <input id="release-version" class="input" type="text" maxlength="40" autocomplete="off" placeholder="ex.: 1.1.0">
+              </div>
+            </div>
+            <div class="field">
+              <label for="release-url">Link de download</label>
+              <input id="release-url" class="input" type="url" autocomplete="off" spellcheck="false" placeholder="https://…">
+            </div>
+            <div class="field">
+              <label for="release-notes">O que mudou <em>(opcional)</em></label>
+              <input id="release-notes" class="input" type="text" maxlength="500" autocomplete="off" placeholder="ex.: correções e melhorias">
+            </div>
+            <div class="card-actions">
+              <button id="release-publish-btn" class="btn btn-primary btn-sm" type="button">Publicar</button>
+              <button id="release-clear-btn" class="btn btn-ghost btn-sm" type="button">Remover</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Minha equipe (só líder): funcionários da empresa, taxa, limite de WhatsApp e convites -->
+      <section id="company-panel" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-company">
+        <div class="section-head">
+          <div>
+            <h2>Minha equipe</h2>
+            <p>Convide funcionários, defina sua taxa e quantos WhatsApp cada um pode usar. Todos trabalham na sua MisticPay.</p>
+          </div>
+          <button id="create-employee-invite-btn" class="btn btn-primary" type="button">
+            <svg class="icon"><use href="#i-plus"/></svg> Convidar funcionário
+          </button>
+        </div>
+
+        <div class="segmented" role="radiogroup" aria-label="Seção da equipe">
+          <label><input type="radio" name="company-tab" value="employees" checked><span>Funcionários</span></label>
+          <label><input type="radio" name="company-tab" value="money"><span>Dinheiro</span></label>
+          <label><input type="radio" name="company-tab" value="invites"><span>Convites</span></label>
+        </div>
+
+        <div id="company-section-employees" class="settings-section scroll">
+          <ul id="company-employees-list" class="stack-list"></ul>
+        </div>
+
+        <div id="company-section-money" class="settings-section scroll hidden">
+          <div class="panel-box">
+            <h3>MisticPay da empresa</h3>
+            <p class="hint">Toda a equipe cobra e saca por esta conta. As credenciais ficam guardadas no servidor — nunca no computador dos funcionários.</p>
+            <p id="company-mistic-status" class="hint"></p>
+            <div class="field">
+              <label for="company-mistic-client-id">Client ID</label>
+              <input id="company-mistic-client-id" class="input" type="text" autocomplete="off" spellcheck="false" placeholder="Client ID da MisticPay">
+            </div>
+            <div class="field">
+              <label for="company-mistic-client-secret">Client Secret</label>
+              <input id="company-mistic-client-secret" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="deixe em branco para manter o atual">
+            </div>
+            <div class="card-actions">
+              <button id="company-mistic-save-btn" class="btn btn-primary btn-sm" type="button">Salvar e testar</button>
+              <button id="company-mistic-clear-btn" class="btn btn-ghost btn-sm" type="button">Remover</button>
+            </div>
+          </div>
+
+          <div class="panel-box">
+            <h3>Resumo</h3>
+            <div id="company-money-summary" class="stack-list"></div>
+          </div>
+
+          <div class="panel-box">
+            <h3>Minha parte (taxas)</h3>
+            <p class="hint">Saque o que você acumulou de taxas dos funcionários, pela mesma conta MisticPay.</p>
+            <p id="company-fee-balance" class="hint"></p>
+            <div class="field-row">
+              <div class="field">
+                <label for="company-withdraw-amount">Valor (R$)</label>
+                <input id="company-withdraw-amount" class="input" type="text" inputmode="decimal" placeholder="0,00">
+              </div>
+              <div class="field">
+                <label for="company-withdraw-keytype">Tipo da chave PIX</label>
+                <select id="company-withdraw-keytype" class="select">
+                  <option value="CPF">CPF</option>
+                  <option value="CNPJ">CNPJ</option>
+                  <option value="EMAIL">E-mail</option>
+                  <option value="TELEFONE">Telefone</option>
+                  <option value="CHAVE_ALEATORIA">Chave aleatória</option>
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="company-withdraw-key">Chave PIX</label>
+              <input id="company-withdraw-key" class="input" type="text" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label for="company-withdraw-password">Senha de saque</label>
+              <input id="company-withdraw-password" class="input" type="password" autocomplete="off" placeholder="sua senha de saque">
+              <p id="company-withdraw-password-hint" class="hint"></p>
+            </div>
+            <div class="card-actions">
+              <button id="company-withdraw-btn" class="btn btn-primary btn-sm" type="button">Sacar minha parte</button>
+              <button id="company-withdraw-password-btn" class="btn btn-ghost btn-sm" type="button">Criar/trocar senha de saque</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="company-section-invites" class="settings-section scroll hidden">
+          <ul id="company-invites-list" class="stack-list"></ul>
+        </div>
       </section>
     </main>
   </div>
@@ -545,6 +677,38 @@
   </div>
 
   <!-- ============ Modal: encaminhar mensagem ============ -->
+  <!-- ============ Modal: nova conversa ============ -->
+  <div id="new-chat-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="new-chat-title">
+    <div class="modal-card modal-sm">
+      <header class="modal-head">
+        <div>
+          <h2 id="new-chat-title">Nova conversa</h2>
+          <p>Fale com você mesmo, com um contato salvo ou com um número.</p>
+        </div>
+        <button type="button" class="icon-btn modal-close" data-close aria-label="Fechar"><svg class="icon"><use href="#i-x"/></svg></button>
+      </header>
+      <div class="modal-body">
+        <button id="new-chat-self-btn" type="button" class="new-chat-self">
+          <span class="new-chat-self-icon"><svg class="icon"><use href="#i-message"/></svg></span>
+          <span>Conversar comigo mesmo</span>
+        </button>
+        <form id="new-chat-phone-form" class="new-chat-phone">
+          <label class="field">
+            <span class="field-label">Número com DDD</span>
+            <input id="new-chat-phone-input" class="input" type="tel" inputmode="tel" autocomplete="off" placeholder="Ex.: 11 91234-5678">
+          </label>
+          <button type="submit" class="btn btn-primary">Abrir</button>
+        </form>
+        <div class="new-chat-contacts-label">Contatos salvos</div>
+        <label class="search search-inline">
+          <svg class="icon"><use href="#i-search"/></svg>
+          <input id="new-chat-contact-search" class="input" type="search" placeholder="Buscar contato salvo…" autocomplete="off">
+        </label>
+        <ul id="new-chat-contact-list" class="stack-list stack-list-compact new-chat-contact-list"></ul>
+      </div>
+    </div>
+  </div>
+
   <div id="forward-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="forward-modal-title">
     <div class="modal-card modal-sm">
       <header class="modal-head">
@@ -592,6 +756,18 @@
           <span id="contact-info-sub" class="contact-info-sub"></span>
         </div>
         <p id="contact-info-desc" class="contact-info-desc hidden"></p>
+        <!-- Descrição do grupo: o botão só aparece pra quem pode editar os dados do grupo -->
+        <button type="button" id="contact-info-desc-edit" class="btn btn-ghost btn-sm contact-info-desc-edit hidden">
+          <svg class="icon"><use href="#i-pencil"/></svg> <span id="contact-info-desc-edit-label">Editar descrição</span>
+        </button>
+        <div id="contact-info-desc-editor" class="contact-info-desc-editor hidden">
+          <label class="sr-only" for="contact-info-desc-input">Descrição do grupo</label>
+          <textarea id="contact-info-desc-input" class="input" rows="6" maxlength="2048" placeholder="Descrição do grupo (deixe em branco para remover)"></textarea>
+          <div class="contact-info-desc-editor-actions">
+            <button type="button" id="contact-info-desc-cancel" class="btn btn-ghost btn-sm">Cancelar</button>
+            <button type="button" id="contact-info-desc-save" class="btn btn-primary btn-sm">Salvar</button>
+          </div>
+        </div>
 
         <div class="contact-info-actions">
           <button type="button" id="contact-info-message" class="contact-info-action hidden" title="Chamar no privado">
@@ -618,6 +794,23 @@
             <span id="contact-info-phone"></span>
             <small>Celular</small>
           </div>
+        </div>
+
+        <!-- Cobrar este cliente (só pessoa, só com a MisticPay configurada). Pré-preenche com o valor do "chama" recente. -->
+        <div id="contact-info-charge-section" class="contact-info-section contact-info-charge hidden">
+          <div class="contact-info-section-head">
+            <svg class="icon"><use href="#i-dollar"/></svg>
+            <span>Cobrar este cliente</span>
+          </div>
+          <form id="contact-info-charge-form" class="contact-info-charge-form">
+            <div class="contact-info-charge-input">
+              <span class="contact-info-charge-prefix">R$</span>
+              <input id="contact-info-charge-amount" class="input" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="0,00" autocomplete="off" aria-label="Valor da cobrança">
+            </div>
+            <button type="submit" id="contact-info-charge-send" class="btn btn-primary">
+              <svg class="icon"><use href="#i-send"/></svg> Enviar cobrança
+            </button>
+          </form>
         </div>
 
         <button type="button" id="contact-info-participants-row" class="contact-info-row contact-info-row-link hidden">
@@ -786,10 +979,25 @@
                 <option value="near_2min">Quando faltar 2 minutos pro motorista chegar</option>
                 <option value="near_1min">Quando faltar 1 minuto pro motorista chegar</option>
                 <option value="on_arrival">Quando o motorista chegar</option>
+                <option value="on_trip">Depois do embarque (corrida iniciada)</option>
               </select>
             </div>
 
             <div class="field">
+              <label for="ride-charge-keyword">Palavra-chave do valor combinado</label>
+              <input id="ride-charge-keyword" class="input" type="text" maxlength="40" autocomplete="off" placeholder="chama">
+              <p class="hint">O bot capta o valor da corrida quando você escreve o preço junto dessa palavra (ex.: com “chama”, lê o valor em “25,00 chama” ou “chama 25,00”). Troque para a palavra que você usa.</p>
+            </div>
+
+            <label class="option">
+              <span class="option-text">
+                <strong>Enviar mensagem antes da cobrança</strong>
+                <small>O aviso abaixo (ex.: cancelamento automático se não pagar) vai ao cliente logo antes do PIX. Desligado, só o PIX é enviado.</small>
+              </span>
+              <span class="switch"><input id="ride-charge-message-enabled" type="checkbox"><span class="switch-track"></span></span>
+            </label>
+
+            <div class="field" id="ride-charge-message-field">
               <div class="label-row">
                 <label for="ride-charge-message">Mensagem enviada junto com a cobrança</label>
                 <button type="button" class="btn btn-ghost btn-sm" data-ride-charge-reset>Restaurar padrão</button>
@@ -1165,6 +1373,14 @@
 
         <label class="option">
           <span class="option-text">
+            <strong>Tocar som também para grupos</strong>
+            <small>Desligado, só as mensagens privadas tocam — mensagens de grupo ficam sem som.</small>
+          </span>
+          <span class="switch"><input id="settings-group-sound" type="checkbox"><span class="switch-track"></span></span>
+        </label>
+
+        <label class="option">
+          <span class="option-text">
             <strong>Ignorar contatos com “ADM” no nome</strong>
             <small>Evita responder quem também é operador.</small>
           </span>
@@ -1233,7 +1449,10 @@
 
         <!-- ---- MisticPay ---- -->
         <div id="settings-mistic" class="settings-section hidden">
-          <label class="option">
+          <p id="mistic-employee-note" class="hint hidden" style="padding:10px;border-radius:8px;background:var(--surface-2,rgba(127,127,127,.08))">
+            Você trabalha na <strong>MisticPay da sua empresa</strong>, configurada pelo líder. Aqui você personaliza suas mensagens e cria sua senha de saque — as credenciais ficam com o líder, no servidor.
+          </p>
+          <label id="mistic-enabled-row" class="option">
             <span class="option-text">
               <strong>Ativar a integração com a MisticPay</strong>
               <small>Mostra o botão flutuante de cobrança durante as conversas no privado e libera cobrar clientes e sacar pelo painel.</small>
@@ -1241,7 +1460,7 @@
             <span class="switch"><input id="mistic-enabled" type="checkbox"><span class="switch-track"></span></span>
           </label>
 
-          <div class="panel-box">
+          <div id="mistic-credentials-box" class="panel-box">
             <h3>Credenciais da MisticPay</h3>
             <p class="hint">Vêm do painel da MisticPay. O Client Secret fica guardado só neste computador e nunca volta para esta tela.</p>
             <div class="field-row">

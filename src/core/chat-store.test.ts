@@ -378,6 +378,43 @@ describe("ChatStore", () => {
     });
   });
 
+  test("markEdited troca o texto e marca 'editada'; só vale pra texto que ainda existe", () => {
+    store.recordMessage(msg({ id: "E1", text: "oi" }), "Maria");
+    expect(store.getMessage(CHAT, "E1")).toMatchObject({ text: "oi", edited: false });
+
+    expect(store.markEdited(CHAT, "E1", "oi, tudo bem?")).toBe(true);
+    expect(store.getMessage(CHAT, "E1")).toMatchObject({ text: "oi, tudo bem?", edited: true });
+
+    // mensagem inexistente ou de outro tipo não é editada
+    expect(store.markEdited(CHAT, "NAO-EXISTE", "x")).toBe(false);
+    store.recordMessage(msg({ id: "IMG1", type: "image", text: null, mediaFile: "a.jpg" }), "Maria");
+    expect(store.markEdited(CHAT, "IMG1", "legenda")).toBe(false);
+  });
+
+  test("deleteChat tira a conversa inteira do painel (mensagens + conversa)", () => {
+    store.recordMessage(msg({ id: "A1", text: "oi" }), "Maria");
+    store.recordMessage(msg({ id: "A2", text: "tudo bem?" }), "Maria");
+    expect(store.listMessages(CHAT).length).toBe(2);
+    expect(store.listChats().some((c) => c.jid === CHAT)).toBe(true);
+
+    store.deleteChat(CHAT);
+    expect(store.listMessages(CHAT)).toEqual([]);
+    expect(store.listChats().some((c) => c.jid === CHAT)).toBe(false);
+  });
+
+  test("contato salvo: o nome é guardado e aparece como savedName no resumo da conversa", () => {
+    store.recordMessage(msg({ id: "A1", text: "oi", pushName: "Maria" }), "Maria");
+    expect(store.savedContactName(CHAT)).toBeNull();
+
+    store.setSavedContactName(CHAT, "Maria Cliente VIP");
+    expect(store.savedContactName(CHAT)).toBe("Maria Cliente VIP");
+    expect(store.listChats().find((c) => c.jid === CHAT)?.savedName).toBe("Maria Cliente VIP");
+
+    store.setSavedContactName(CHAT, null);
+    expect(store.savedContactName(CHAT)).toBeNull();
+    expect(store.listChats().find((c) => c.jid === CHAT)?.savedName ?? null).toBeNull();
+  });
+
   test("abrir um banco já existente (de antes de fixar/arquivar) ganha as colunas novas sem perder nada", () => {
     const file = join(dirs.appDataDir, "chat-legado.db");
     const legacy = new Database(file);
@@ -467,6 +504,101 @@ describe("ChatStore", () => {
       store.deleteFolder(folder.id);
       expect(store.listChats().map((c) => c.jid)).toEqual([CHAT]);
       expect(store.listMessages(CHAT).length).toBe(1);
+    });
+  });
+
+  describe("mergeChat (junta conversas duplicadas da mesma pessoa)", () => {
+    const LID = "111111111111111@lid";
+    const PHONE = CHAT; // 5511977770000@s.whatsapp.net
+
+    test("funde mensagens, não-lidas, fixada, nome salvo e vínculo de lista; apaga a origem", () => {
+      // Metade sob @lid (ex.: migração de LID do WhatsApp): 2 mensagens do cliente (contam 2 não-lidas)
+      store.recordMessage(msg({ chatJid: LID, id: "A1", text: "Manda o Pix" }), "Maria");
+      store.recordMessage(msg({ chatJid: LID, id: "A2", text: "Oi de novo" }), "Maria");
+      store.setSavedContactName(LID, "Maria Cliente");
+      store.setPinned(LID, true);
+      const folder = store.createFolder("Clientes");
+      store.addChatToFolder(folder.id, LID);
+
+      // Metade sob o telefone (ex.: eco da cobrança, fromMe → não conta não-lida)
+      store.recordMessage(msg({ chatJid: PHONE, id: "B1", fromMe: true, senderJid: null, text: "QR Code para pagar R$ 30,00" }), null);
+
+      expect(store.hasChat(LID)).toBe(true);
+      expect(store.hasChat(PHONE)).toBe(true);
+
+      store.mergeChat(LID, PHONE);
+
+      // A metade do @lid sumiu; tudo foi pro telefone (que ficou na lista, pra onde o vínculo migrou)
+      expect(store.hasChat(LID)).toBe(false);
+      const inFolder = store.listChatsInFolder(folder.id);
+      expect(inFolder.map((c) => c.jid)).toEqual([PHONE]);
+      expect(inFolder[0]!.pinnedAt).not.toBeNull();
+      expect(inFolder[0]!.unreadCount).toBe(2); // 2 (do @lid) + 0 (do telefone)
+      expect(store.savedContactName(PHONE)).toBe("Maria Cliente");
+      expect(store.savedContactName(LID)).toBeNull();
+      expect(store.foldersForChat(PHONE)).toEqual([folder.id]);
+      expect(store.listMessages(PHONE).map((m) => m.id).sort()).toEqual(["A1", "A2", "B1"]);
+    });
+
+    test("a MESMA mensagem ecoada sob os dois JIDs não duplica", () => {
+      store.recordMessage(msg({ chatJid: LID, id: "X1", text: "oi" }), "Maria");
+      store.recordMessage(msg({ chatJid: PHONE, id: "X1", text: "oi" }), null); // mesma id nos dois
+      store.mergeChat(LID, PHONE);
+      expect(store.listMessages(PHONE).map((m) => m.id)).toEqual(["X1"]);
+      expect(store.hasChat(LID)).toBe(false);
+    });
+
+    test("arquivada em qualquer metade continua arquivada depois de fundir", () => {
+      store.recordMessage(msg({ chatJid: LID, id: "A1" }), "Maria");
+      store.recordMessage(msg({ chatJid: PHONE, id: "B1" }), "Maria");
+      store.setArchived(LID, true);
+      store.mergeChat(LID, PHONE);
+      expect(store.isArchived(PHONE)).toBe(true);
+    });
+
+    test("fundir pra uma conversa que ainda não existe cria a de destino", () => {
+      store.recordMessage(msg({ chatJid: LID, id: "A1", text: "só no lid" }), "Maria");
+      store.mergeChat(LID, PHONE);
+      expect(store.hasChat(LID)).toBe(false);
+      expect(store.hasChat(PHONE)).toBe(true);
+      expect(store.listMessages(PHONE).map((m) => m.id)).toEqual(["A1"]);
+    });
+  });
+
+  describe("searchAllMessages (busca global por conteúdo)", () => {
+    const OUTRO = "5511966660000@s.whatsapp.net";
+
+    test("acha o termo em conversas diferentes, com dados da conversa", () => {
+      store.recordMessage(msg({ chatJid: CHAT, id: "A1", text: "Rua Kenkiti Shimomoto, 1150" }), "Maria");
+      store.recordMessage(msg({ chatJid: OUTRO, id: "B1", text: "passa na rua de cima" }), "João");
+      store.recordMessage(msg({ chatJid: CHAT, id: "A2", text: "bom dia" }), "Maria");
+
+      const hits = store.searchAllMessages("rua");
+      expect(hits.map((h) => h.id).sort()).toEqual(["A1", "B1"]);
+      const a1 = hits.find((h) => h.id === "A1")!;
+      expect(a1).toMatchObject({ chatJid: CHAT, isGroup: false, name: "Maria", text: "Rua Kenkiti Shimomoto, 1150" });
+    });
+
+    test("respeita o limite e vem do mais recente pro mais antigo", () => {
+      for (let i = 0; i < 5; i++) {
+        store.recordMessage(msg({ chatJid: CHAT, id: `M${i}`, text: `rua ${i}`, timestamp: 1000 + i }), "Maria");
+      }
+      const hits = store.searchAllMessages("rua", 3);
+      expect(hits.length).toBe(3);
+      expect(hits.map((h) => h.id)).toEqual(["M4", "M3", "M2"]);
+    });
+
+    test("ignora mensagens apagadas (revoked) e avisos de sistema", () => {
+      store.recordMessage(msg({ chatJid: CHAT, id: "R1", type: "revoked", text: "rua apagada" }), "Maria");
+      store.recordMessage(msg({ chatJid: CHAT, id: "S1", type: "system", text: "rua do sistema" }), "Maria");
+      store.recordMessage(msg({ chatJid: CHAT, id: "T1", text: "rua de verdade" }), "Maria");
+      expect(store.searchAllMessages("rua").map((h) => h.id)).toEqual(["T1"]);
+    });
+
+    test("nome salvo do contato vem junto no resultado", () => {
+      store.recordMessage(msg({ chatJid: CHAT, id: "A1", text: "combinamos na rua X" }), "Maria");
+      store.setSavedContactName(CHAT, "Maria Cliente");
+      expect(store.searchAllMessages("rua")[0]!.savedName).toBe("Maria Cliente");
     });
   });
 });

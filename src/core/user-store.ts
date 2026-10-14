@@ -3,7 +3,7 @@ import { JsonFileStore } from "./base-store";
 import { hashPassword, verifyPassword, type PasswordHash } from "../utils/password";
 import { CONFIG } from "../config";
 
-export type UserRole = "admin" | "operator";
+export type UserRole = "admin" | "leader" | "operator";
 
 /**
  * Funcionalidades que o admin liga/desliga por usuário (venda por plano). "Bot de chamar no

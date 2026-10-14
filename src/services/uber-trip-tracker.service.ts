@@ -1,4 +1,5 @@
 import { logger } from "../utils/logger";
+import { sleep } from "../utils/sleep";
 import type { RideChargeTrigger } from "../core/settings-store";
 import type { PersistedUberTrip, PersistedUberTrips } from "../core/uber-trip-store";
 import {
@@ -19,6 +20,7 @@ const CHARGE_TRIGGER_PHASE: Record<RideChargeTrigger, UberTripPhase | null> = {
   near_2min: "near_pickup",
   near_1min: "near_pickup_1min",
   on_arrival: "arrived_pickup",
+  on_trip: "in_progress", // depois do embarque (a corrida já começou)
 };
 
 /** Com o motorista a menos disso do local de partida, consulta mais rápido pra não perder os marcos de 2 min/1 min. */
@@ -41,10 +43,29 @@ export interface UberTripTrackerOptions {
   fastPollIntervalMs?: number;
   /** Quantas falhas seguidas antes de desistir de acompanhar essa corrida. */
   maxConsecutiveErrors?: number;
+  /**
+   * Quantas vezes tentar ABRIR o navegador da corrida antes de desistir. Abrir um Chrome headless
+   * falha às vezes por motivo passageiro (PC ocupado, porta em disputa, navegador lento pra subir);
+   * sem tentar de novo, um tropeço desses já fazia a corrida não ser acompanhada. Padrão: 3.
+   */
+  openRetries?: number;
+  /** Espera entre as tentativas de abrir o navegador. Padrão: 2,5 s. */
+  openRetryDelayMs?: number;
+  /**
+   * Quantos navegadores podem estar ABRINDO ao mesmo tempo. Vários links de corrida chegando juntos
+   * abriam vários Chrome de uma vez e o PC engasgava, derrubando uns e outros; em fila, cada um abre
+   * com folga de recurso. Padrão: 2.
+   */
+  openConcurrency?: number;
   /** Tempo máximo acompanhando uma mesma corrida: passou disso, para sozinho (nenhuma corrida dura tanto; evita navegador aberto pra sempre). */
   maxTrackingMs?: number;
   /** Abre a "torneira" de leituras pra um token de corrida (produção usa um Chrome headless; testes injetam uma fake). */
   openStatusFetcher: (shareToken: string) => Promise<UberStatusFetcher>;
+  /**
+   * Esta instalação pode acompanhar essa corrida? `false` = outra instalação do programa conectada
+   * no mesmo WhatsApp já pegou (ver `Account.claimRide`). Sem isto, acompanha sempre.
+   */
+  canTrack?: (chatJid: string, shareToken: string) => Promise<boolean>;
   /** Em qual marco da corrida a cobrança automática sai (lido na hora de começar a acompanhar, não congelado). */
   chargeTrigger?: () => RideChargeTrigger;
   /**
@@ -142,8 +163,29 @@ export class UberTripTrackerService {
   private pendingStarts = new Map<string, { shareToken: string }>();
   /** Conversa → quando saiu uma cobrança por uma corrida que ainda não embarcou (ver `CHARGE_CARRY_OVER_MS`). */
   private unconsumedCharges = new Map<string, number>();
+  /** Vagas livres pra abrir navegador agora (semáforo); quem não pega vaga espera na fila `openWaiters`. */
+  private openSlots: number;
+  private readonly openWaiters: Array<() => void> = [];
 
-  constructor(private readonly options: UberTripTrackerOptions) {}
+  constructor(private readonly options: UberTripTrackerOptions) {
+    this.openSlots = Math.max(1, options.openConcurrency ?? 2);
+  }
+
+  /** Pega uma vaga pra abrir um navegador (espera na fila se todas estiverem ocupadas). */
+  private async acquireOpenSlot(): Promise<void> {
+    if (this.openSlots > 0) {
+      this.openSlots--;
+      return;
+    }
+    await new Promise<void>((resolve) => this.openWaiters.push(resolve));
+  }
+
+  /** Devolve a vaga: passa direto pro próximo da fila, ou volta pro bolo se não houver ninguém esperando. */
+  private releaseOpenSlot(): void {
+    const next = this.openWaiters.shift();
+    if (next) next();
+    else this.openSlots++;
+  }
 
   isTracking(chatJid: string): boolean {
     return this.trackers.has(chatJid) || this.pendingStarts.has(chatJid);
@@ -192,6 +234,15 @@ export class UberTripTrackerService {
       return;
     }
     if (this.pendingStarts.get(chatJid)?.shareToken === shareToken) return;
+
+    // Outra instalação do programa no mesmo WhatsApp já está acompanhando essa corrida: se as duas
+    // acompanhassem, o cliente receberia os avisos e a cobrança em dobro. A corrida anterior desta
+    // conversa (se havia) fica pra trás do mesmo jeito: o link novo a substituiu.
+    if (this.options.canTrack && !(await this.options.canTrack(chatJid, shareToken))) {
+      logger.info({ chatJid }, "Corrida Uber já está sendo acompanhada por outra instalação neste WhatsApp: esta não acompanha");
+      this.stopTracking(chatJid);
+      return;
+    }
 
     this.stopTracking(chatJid);
     const fetcher = await this.openFetcher(chatJid, shareToken);
@@ -309,19 +360,56 @@ export class UberTripTrackerService {
     const pending = { shareToken };
     this.pendingStarts.set(chatJid, pending);
 
-    let fetcher: UberStatusFetcher;
+    // Em fila: vários links juntos não abrem vários navegadores ao mesmo tempo (o que fazia o PC
+    // engasgar e derrubar uns e outros).
+    await this.acquireOpenSlot();
     try {
-      fetcher = await this.options.openStatusFetcher(shareToken);
-    } catch (err) {
-      if (this.pendingStarts.get(chatJid) === pending) this.pendingStarts.delete(chatJid);
-      throw err;
+      // Parado ou trocado por outro link enquanto esperava a vaga: nem abre.
+      if (this.pendingStarts.get(chatJid) !== pending) return null;
+
+      let fetcher: UberStatusFetcher;
+      try {
+        fetcher = await this.openWithRetry(chatJid, shareToken, pending);
+      } catch (err) {
+        // Trocado/parado no meio das tentativas: não é falha a avisar (o link novo assumiu).
+        if (this.pendingStarts.get(chatJid) !== pending) return null;
+        this.pendingStarts.delete(chatJid);
+        throw err;
+      }
+
+      // Parado ou trocado enquanto o navegador abria: fecha a torneira recém-aberta.
+      if (this.pendingStarts.get(chatJid) !== pending) {
+        this.closeFetcher(fetcher, chatJid);
+        return null;
+      }
+      this.pendingStarts.delete(chatJid);
+      return fetcher;
+    } finally {
+      this.releaseOpenSlot();
     }
-    if (this.pendingStarts.get(chatJid) !== pending) {
-      this.closeFetcher(fetcher, chatJid);
-      return null;
+  }
+
+  /**
+   * Abre o navegador da corrida tentando de novo algumas vezes (abrir Chrome falha por motivo
+   * passageiro). Para de tentar na hora se o acompanhamento foi parado/trocado no meio.
+   */
+  private async openWithRetry(chatJid: string, shareToken: string, pending: { shareToken: string }): Promise<UberStatusFetcher> {
+    const attempts = Math.max(1, this.options.openRetries ?? 3);
+    const delayMs = this.options.openRetryDelayMs ?? 2500;
+    let lastErr: unknown;
+    for (let i = 0; i < attempts; i++) {
+      if (this.pendingStarts.get(chatJid) !== pending) throw new Error("acompanhamento trocado/parado durante a abertura");
+      try {
+        return await this.options.openStatusFetcher(shareToken);
+      } catch (err) {
+        lastErr = err;
+        if (i < attempts - 1) {
+          logger.debug({ err, chatJid, attempt: i + 1, attempts }, "Falha ao abrir o navegador da corrida; tentando de novo");
+          await sleep(delayMs);
+        }
+      }
     }
-    this.pendingStarts.delete(chatJid);
-    return fetcher;
+    throw lastErr;
   }
 
   private activate(chatJid: string, fetcher: UberStatusFetcher, trip: PersistedUberTrip): Tracker {
@@ -514,7 +602,7 @@ export class UberTripTrackerService {
       if (!isCurrent()) return;
       tracker.consecutiveErrors++;
       logger.debug({ err, chatJid, attempt: tracker.consecutiveErrors }, "Falha ao consultar status da corrida Uber");
-      if (tracker.consecutiveErrors < (this.options.maxConsecutiveErrors ?? 5)) return;
+      if (tracker.consecutiveErrors < (this.options.maxConsecutiveErrors ?? 8)) return;
 
       const boarded = this.hasBoarded(tracker);
       this.stopTracking(chatJid);

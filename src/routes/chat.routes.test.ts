@@ -88,13 +88,16 @@ describe("GET /chats", () => {
     expect(byJid[GROUP]).toBeNull();
   });
 
-  test("conversa por LID (identidade oculta): telefone vem certo quando o painel já sabe, null quando não dá", async () => {
+  test("conversa por LID (identidade oculta) que resolve o telefone: fica guardada sob o telefone (não duplica)", async () => {
     const CLIENT_LID = "987654321@lid";
     connection.sock.lidToPhone[CLIENT_LID] = CLIENT;
     await connection.deliver(privateText(CLIENT_LID, "Oi", { pushName: "Bruno" }));
 
+    // Com o telefone resolvido, a conversa é chaveada pelo telefone — assim a mesma pessoa não
+    // vira duas conversas (uma por @lid, outra por telefone).
     const { json } = await api("GET", "/accounts/default/chats");
-    expect(json.chats[0]).toMatchObject({ jid: CLIENT_LID, phone: "5511977770000" });
+    expect(json.chats.length).toBe(1);
+    expect(json.chats[0]).toMatchObject({ jid: CLIENT, phone: "5511977770000" });
   });
 
   test("LID que não resolveu na hora da mensagem: a lista resolve ao vivo depois, não fica sem número pra sempre", async () => {
@@ -123,6 +126,33 @@ describe("GET /chats/:jid/messages", () => {
     const { json } = await api("GET", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/messages`);
     expect(json.messages).toEqual([]);
   });
+
+  test("edição recebida (via messages.update): troca o texto e marca 'editada'", async () => {
+    await connection.deliver(privateText(CLIENT, "textão errado", { pushName: "Maria", id: "EDIT1" }));
+    // O WhatsApp entrega a edição como messages.update, com o conteúdo novo embrulhado em editedMessage.message
+    connection.deliverEdit(CLIENT, "EDIT1", { editedMessage: { message: { conversation: "texto certo" } } } as never);
+
+    const { json } = await api("GET", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/messages`);
+    const msg = json.messages.find((m: any) => m.id === "EDIT1");
+    expect(msg).toMatchObject({ text: "texto certo", edited: true });
+  });
+});
+
+describe("POST /chats/:jid/call-link (link de chamada)", () => {
+  test("cria o link de voz e, por padrão, manda pro cliente na conversa", async () => {
+    const { status, json } = await api("POST", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/call-link`, { type: "audio" });
+    expect(status).toBe(200);
+    expect(json).toMatchObject({ type: "audio", sent: true, link: "https://call.whatsapp.com/voice/CALLTOKEN" });
+
+    const { json: msgs } = await api("GET", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/messages`);
+    expect(msgs.messages.some((m: any) => (m.text || "").includes("call.whatsapp.com/voice/CALLTOKEN"))).toBe(true);
+  });
+
+  test("vídeo usa o prefixo de vídeo; send:false não manda nada pro cliente", async () => {
+    const { json } = await api("POST", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/call-link`, { type: "video", send: false });
+    expect(json).toMatchObject({ type: "video", sent: false, link: "https://call.whatsapp.com/video/CALLTOKEN" });
+    expect((await api("GET", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/messages`)).json.messages).toEqual([]);
+  });
 });
 
 describe("POST /chats/:jid/messages (responder como operador)", () => {
@@ -131,6 +161,20 @@ describe("POST /chats/:jid/messages (responder como operador)", () => {
     expect(status).toBe(200);
     expect(json.message).toMatchObject({ text: "Já te atendo!", fromMe: true });
     expect(connection.sock.textsTo(CLIENT)).toEqual(["Já te atendo!"]);
+  });
+
+  test("resposta logo após uma mensagem recebida fica DEPOIS dela, mesmo com o relógio local atrasado", async () => {
+    // Mensagem recebida com horário do servidor adiantado (1h à frente do relógio local)
+    const futureSec = Math.floor(Date.now() / 1000) + 3600;
+    await connection.deliver(privateText(CLIENT, "Chega aí", { pushName: "Maria", timestamp: futureSec }));
+
+    const { json } = await api("POST", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/messages`, { text: "Já vou" });
+    // a resposta recebe um horário DEPOIS da mensagem recebida (e não o Date.now(), que ficaria antes)
+    expect(json.message.timestamp).toBeGreaterThan(futureSec * 1000);
+
+    // e na lista (mais recente primeiro) ela aparece acima da mensagem recebida
+    const list = (await api("GET", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/messages`)).json.messages;
+    expect(list.map((m: any) => m.text)).toEqual(["Já vou", "Chega aí"]);
   });
 
   test("não marca a mensagem como enviada pelo bot (o eco cancela a saudação/segurança como resposta sua)", async () => {
@@ -180,6 +224,73 @@ describe("POST /chats/:jid/messages (responder como operador)", () => {
     expect(status).toBe(200);
     expect(json.message).toMatchObject({ type: "image", text: "Olha essa" });
     expect(json.message.mediaFile).toBeTruthy();
+  });
+
+  test("grupo: @número vira marcação (mentions) enviada pro WhatsApp", async () => {
+    await api("POST", `/accounts/default/chats/${encodeURIComponent(GROUP)}/messages`, { text: "bom dia @5511977770000" });
+    const last = connection.sock.sent.at(-1)!;
+    expect(last.jid).toBe(GROUP);
+    expect(last.content["mentions"]).toEqual(["5511977770000@s.whatsapp.net"]);
+  });
+
+  test("privado: @número NÃO vira marcação", async () => {
+    await api("POST", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/messages`, { text: "te liguei @5511977770000" });
+    expect(connection.sock.sent.at(-1)!.content["mentions"]).toBeUndefined();
+  });
+
+  test("grupo sem @: nenhuma marcação é enviada", async () => {
+    await api("POST", `/accounts/default/chats/${encodeURIComponent(GROUP)}/messages`, { text: "aviso geral" });
+    expect(connection.sock.sent.at(-1)!.content["mentions"]).toBeUndefined();
+  });
+});
+
+describe("nova conversa", () => {
+  test("GET /chats/contacts: traz o seu número (comigo mesmo) e os contatos salvos", async () => {
+    await connection.deliver(privateText(CLIENT, "oi", { pushName: "Fulano" }));
+    await api("POST", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/save-contact`, { name: "Maria Cliente" });
+    const { json } = await api("GET", "/accounts/default/chats/contacts");
+    expect(json.self).toMatchObject({ jid: "5511900000000@s.whatsapp.net", phone: "5511900000000" });
+    expect(json.contacts).toEqual([{ jid: CLIENT, name: "Maria Cliente", phone: "5511977770000" }]);
+  });
+
+  test("POST /chats/open por telefone: confere no WhatsApp e, ao enviar a 1ª mensagem, a conversa entra na lista", async () => {
+    connection.sock.registered["5511955550000"] = "5511955550000@s.whatsapp.net";
+    const { status, json } = await api("POST", "/accounts/default/chats/open", { phone: "5511955550000" });
+    expect(status).toBe(200);
+    expect(json.chatJid).toBe("5511955550000@s.whatsapp.net");
+    // vazia ainda não aparece (igual ao WhatsApp); depois da 1ª mensagem, sim
+    await api("POST", `/accounts/default/chats/${encodeURIComponent(json.chatJid)}/messages`, { text: "Olá!" });
+    const { json: list } = await api("GET", "/accounts/default/chats");
+    expect(list.chats.some((c: any) => c.jid === "5511955550000@s.whatsapp.net")).toBe(true);
+  });
+
+  test("POST /chats/open: número sem WhatsApp é recusado (404)", async () => {
+    const { status, json } = await api("POST", "/accounts/default/chats/open", { phone: "5511900001111" });
+    expect(status).toBe(404);
+    expect(json.error).toBeTruthy();
+  });
+
+  test("POST /chats/open comigo mesmo: abre a conversa com o próprio número", async () => {
+    const { status, json } = await api("POST", "/accounts/default/chats/open", { self: true });
+    expect(status).toBe(200);
+    expect(json.chatJid).toBe("5511900000000@s.whatsapp.net");
+  });
+});
+
+describe("GET /chats/search (busca global por conteúdo)", () => {
+  test("acha o termo dentro das conversas e devolve a conversa + telefone", async () => {
+    await connection.deliver(privateText(CLIENT, "Rua Kenkiti Shimomoto, 1150", { pushName: "Maria" }));
+    await connection.deliver(privateText(CLIENT_2, "bom dia", { pushName: "João" }));
+
+    const { json } = await api("GET", "/accounts/default/chats/search?q=kenkiti");
+    expect(json.messages.length).toBe(1);
+    expect(json.messages[0]).toMatchObject({ chatJid: CLIENT, text: "Rua Kenkiti Shimomoto, 1150", phone: "5511977770000", isGroup: false });
+  });
+
+  test("menos de 2 caracteres não dispara a busca", async () => {
+    await connection.deliver(privateText(CLIENT, "rua", { pushName: "Maria" }));
+    const { json } = await api("GET", "/accounts/default/chats/search?q=r");
+    expect(json.messages).toEqual([]);
   });
 });
 
@@ -263,6 +374,33 @@ describe("GET /chats/:jid/media (galeria) e /groups-in-common", () => {
 
     const { json } = await api("GET", `/accounts/default/chats/${encodeURIComponent(CLIENT_LID)}/groups-in-common`);
     expect(json.chats.map((c: any) => c.jid).sort()).toEqual([GROUP, GROUP_2].sort());
+  });
+
+  test("grupos em comum: acha mesmo quando a pessoa aparece OCULTA (LID) no grupo e você só tem o telefone dela", async () => {
+    const CLIENT_LID = "987654321@lid";
+    const GROUP_X = "120363111111111111@g.us";
+    // Ela fala no grupo ANTES de o WhatsApp mapear o LID dela → fica gravada pelo LID (sem telefone)
+    await connection.deliver(groupText(GROUP_X, CLIENT_LID, "bom dia", { pushName: "Bruno" }));
+    // Agora o WhatsApp já conhece o mapeamento LID↔telefone
+    connection.sock.lidToPhone[CLIENT_LID] = CLIENT;
+
+    // Consultando pelo TELEFONE dela (o que o painel tem), acha o grupo — resolve telefone→LID pra casar
+    const { json } = await api("GET", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/groups-in-common`);
+    expect(json.chats.map((c: any) => c.jid)).toEqual([GROUP_X]);
+  });
+});
+
+describe("GET /chats/:jid/charge-suggestion (valor pra pré-preencher a cobrança)", () => {
+  test("devolve o valor do 'NN,NN chama' recente que você mandou na conversa", async () => {
+    await api("POST", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/messages`, { text: "25,00 chama" });
+    const { json } = await api("GET", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/charge-suggestion`);
+    expect(json.amountCents).toBe(2500);
+  });
+
+  test("sem 'chama' recente devolve null", async () => {
+    await api("POST", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/messages`, { text: "oi, tudo bem?" });
+    const { json } = await api("GET", `/accounts/default/chats/${encodeURIComponent(CLIENT)}/charge-suggestion`);
+    expect(json.amountCents).toBeNull();
   });
 });
 

@@ -6,7 +6,6 @@
       "name": "nostis-whats-bot",
       "dependencies": {
         "baileys-joss": "2.0.1",
-        "notifier-hook": "^1.0.0",
         "pino": "^10.3.1",
         "qrcode": "1.5.4",
       },
@@ -92,18 +91,6 @@
     "@keyv/bigmap": ["@keyv/bigmap@1.3.1", "", { "dependencies": { "hashery": "^1.4.0", "hookified": "^1.15.0" }, "peerDependencies": { "keyv": "^5.6.0" } }, "sha512-WbzE9sdmQtKy8vrNPa9BRnwZh5UF4s1KTmSK0KUVLo3eff5BlQNNWDnFOouNpKfPKDnms9xynJjsMYjMaT/aFQ=="],
 
     "@keyv/serialize": ["@keyv/serialize@1.1.1", "", {}, "sha512-dXn3FZhPv0US+7dtJsIi2R+c7qWYiReoEh5zUntWCf4oSpMNib8FDhSoed6m3QyZdx5hK7iLFkYk3rNxwt8vTA=="],
-
-    "@phtdacosta/notifier-hook-darwin-arm64": ["@phtdacosta/notifier-hook-darwin-arm64@1.0.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-fcU5wRNchmJxXxP8F7/GYvmdXY3BTxFiIZNtFb28ZJvhmwurpItWGrzaw4TDjV49BoGSGh6MGUHvt0iY5AZlmg=="],
-
-    "@phtdacosta/notifier-hook-darwin-x64": ["@phtdacosta/notifier-hook-darwin-x64@1.0.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-KnuTkXTKa/RrAOG+/3Mhr3PbUCod7BDdwG9ln/V6+Weyy8rHmWhVDsn3XQfh2DSqAajqbL0ieeHLZvQid2mC5A=="],
-
-    "@phtdacosta/notifier-hook-linux-arm64": ["@phtdacosta/notifier-hook-linux-arm64@1.0.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-EjCSAhdCNoT7RHCIvu7s/irdmmSv5Ur2U1mdUTFIK83u+gK2IMt6muzBeE0jgjSUqWlbh1/oTeKkXbi+jE16Eg=="],
-
-    "@phtdacosta/notifier-hook-linux-x64": ["@phtdacosta/notifier-hook-linux-x64@1.0.0", "", { "os": "linux", "cpu": "x64" }, "sha512-Ge0ZxrR4etkSkglj6yaamORHWvjDM7YqDNcVQ03/pHq+6+bLutnlngwx5HWuA+8TF58dygKcWLldX4gVXbjzkg=="],
-
-    "@phtdacosta/notifier-hook-win32-arm64": ["@phtdacosta/notifier-hook-win32-arm64@1.0.0", "", { "os": "win32", "cpu": "arm64" }, "sha512-SpHK8M2RhELasZqUjTFgLYgSvQ8MR/03jY7nGIpA0yV1NSP54zsU1h6FWDH5/G8Gut5rt963lBgcEJ+hjg/C1g=="],
-
-    "@phtdacosta/notifier-hook-win32-x64": ["@phtdacosta/notifier-hook-win32-x64@1.0.0", "", { "os": "win32", "cpu": "x64" }, "sha512-FBdXxb70nt3C/2wa+wgHMQ+72Lxvr1Fz6rbrE9y8Vy79n6XJ/niUGrEGBnl5yObK6xKZ5pRPg/SHn75b7Nd0PQ=="],
 
     "@pinojs/redact": ["@pinojs/redact@0.4.0", "", {}, "sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg=="],
 
@@ -242,8 +229,6 @@
     "ms": ["ms@2.1.3", "", {}, "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA=="],
 
     "music-metadata": ["music-metadata@11.15.0", "", { "dependencies": { "@borewit/text-codec": "^0.2.2", "@tokenizer/token": "^0.3.0", "content-type": "^2.1.0", "debug": "^4.4.3", "file-type": "^21.3.4", "media-typer": "^2.0.0", "strtok3": "^10.3.5", "token-types": "^6.1.2", "uint8array-extras": "^1.5.0", "win-guid": "^0.2.1" } }, "sha512-TN+kO1/oOc8UzDW5N3vSDncBcv9WyNnQQe/NFMcFWq6G1+zVeYUkGvkYpQ/S8wb8vKtUD7i78dIaY0cv+cmPRA=="],
-
-    "notifier-hook": ["notifier-hook@1.0.0", "", { "optionalDependencies": { "@phtdacosta/notifier-hook-darwin-arm64": "1.0.0", "@phtdacosta/notifier-hook-darwin-x64": "1.0.0", "@phtdacosta/notifier-hook-linux-arm64": "1.0.0", "@phtdacosta/notifier-hook-linux-x64": "1.0.0", "@phtdacosta/notifier-hook-win32-arm64": "1.0.0", "@phtdacosta/notifier-hook-win32-x64": "1.0.0" } }, "sha512-9jn4j40Tfkbg85A4evyl0qI2whuTblaq6LnKoC1JX1fXgBXiFUw+uDfDnTg7T92nl0hSxxjQoDub/8nRpExKzw=="],
 
     "on-exit-leak-free": ["on-exit-leak-free@2.1.2", "", {}, "sha512-0eJJY6hXLGf1udHwfNftBqH+g73EU4B504nZeKpz1sYRKafAghwxEJunB2O7rDZkL4PGfsMVnTXZ2EjibbqcsA=="],
 

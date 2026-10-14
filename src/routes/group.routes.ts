@@ -2,6 +2,15 @@ import type { Account } from "../core/account";
 import { normalizeJid } from "../utils/jid";
 import { logger } from "../utils/logger";
 
+/** Limite do próprio WhatsApp para a descrição de um grupo. */
+const MAX_GROUP_DESCRIPTION_LENGTH = 2048;
+
+/** Tira o código de convite de um link de grupo do WhatsApp (chat.whatsapp.com/CÓDIGO). */
+function extractGroupInviteCode(link: string): string | null {
+  const m = String(link ?? "").match(/chat\.whatsapp\.com\/(?:invite\/)?([0-9A-Za-z_-]{6,})/i);
+  return m ? m[1]! : null;
+}
+
 export async function handleGroupRoutes(
   req: Request,
   url: URL,
@@ -15,6 +24,40 @@ export async function handleGroupRoutes(
       enabled: bot.enabledGroups,
       delays: groupDelays.getAll(),
     });
+  }
+
+  // Prévia de um convite de grupo (nome e tamanho), sem entrar ainda — pra perguntar antes.
+  if (url.pathname === "/groups/invite-info" && req.method === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { link?: string };
+    const code = extractGroupInviteCode(body.link ?? "");
+    if (!code) return Response.json({ error: "Esse não parece um link de convite de grupo do WhatsApp." }, { status: 400 });
+    if (!connection.connected) return Response.json({ error: "O WhatsApp desta conta está desconectado." }, { status: 503 });
+    try {
+      const info = (await connection.getSock().groupGetInviteInfo(code)) as { subject?: string; size?: number; participants?: unknown[]; id?: string };
+      return Response.json({ code, name: info.subject ?? "", size: info.size ?? info.participants?.length ?? null });
+    } catch (err) {
+      logger.error({ err }, "Falha ao ler o convite de grupo");
+      return Response.json({ error: "Não foi possível ler esse convite (link inválido, expirado, ou você já está no grupo)." }, { status: 502 });
+    }
+  }
+
+  // Entra no grupo pelo convite, usando ESTA conta de WhatsApp (não o app do celular). Se o grupo
+  // exige aprovação de admin, o próprio WhatsApp manda a solicitação em vez de entrar na hora.
+  if (url.pathname === "/groups/invite-join" && req.method === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { code?: string };
+    const code = (body.code ?? "").trim();
+    if (!code) return Response.json({ error: "Convite inválido." }, { status: 400 });
+    if (!connection.connected) return Response.json({ error: "O WhatsApp desta conta está desconectado." }, { status: 503 });
+    try {
+      const jid = await connection.getSock().groupAcceptInvite(code);
+      return Response.json({ jid: jid ?? null });
+    } catch (err) {
+      logger.error({ err }, "Falha ao entrar no grupo por convite");
+      return Response.json(
+        { error: "Não foi possível entrar agora. Se o grupo exige aprovação de admin, sua solicitação pode ter sido enviada mesmo assim — aguarde a liberação." },
+        { status: 502 }
+      );
+    }
   }
 
   if (url.pathname === "/groups/toggle" && req.method === "POST") {
@@ -103,16 +146,41 @@ export async function handleGroupRoutes(
         isSuperAdmin: p.admin === "superadmin" || p.isSuperAdmin === true,
         isSelf: isSelfParticipant(p),
       }));
+      const selfIsAdmin = participants.some((p) => p.isSelf && (p.isAdmin || p.isSuperAdmin));
       return Response.json({
         description: meta.desc || null,
         memberCount: participants.length,
         ephemeralDuration: meta.ephemeralDuration || 0,
-        selfIsAdmin: participants.some((p) => p.isSelf && (p.isAdmin || p.isSuperAdmin)),
+        selfIsAdmin,
+        // Quem pode mudar nome/descrição/foto: os admins sempre; os demais só se o grupo não estiver
+        // travado em "só admins editam os dados do grupo" (`restrict`)
+        canEditInfo: selfIsAdmin || (participants.some((p) => p.isSelf) && !meta.restrict),
         participants,
       });
     } catch (err) {
       logger.error({ err, jid }, "Falha ao buscar dados do grupo");
       return Response.json({ error: "Não foi possível buscar os dados do grupo." }, { status: 502 });
+    }
+  }
+
+  // Muda (ou apaga, mandando vazio) a descrição do grupo. Quem decide se você pode é o próprio
+  // WhatsApp: se o grupo só deixa admin editar e você não é, ele recusa e o painel avisa.
+  const descriptionMatch = url.pathname.match(/^\/groups\/([^/]+)\/description$/);
+  if (descriptionMatch && req.method === "PUT") {
+    const jid = decodeURIComponent(descriptionMatch[1]!);
+    const body = (await req.json().catch(() => ({}))) as { description?: unknown };
+    if (typeof body.description !== "string") return Response.json({ error: "Informe a descrição." }, { status: 400 });
+    const description = body.description.trim();
+    if (description.length > MAX_GROUP_DESCRIPTION_LENGTH) {
+      return Response.json({ error: `A descrição pode ter no máximo ${MAX_GROUP_DESCRIPTION_LENGTH} caracteres.` }, { status: 400 });
+    }
+    if (!connection.connected) return Response.json({ error: "O WhatsApp desta conta está desconectado." }, { status: 503 });
+    try {
+      await connection.getSock().groupUpdateDescription(jid, description || undefined);
+      return Response.json({ ok: true, description: description || null });
+    } catch (err) {
+      logger.error({ err, jid }, "Falha ao mudar a descrição do grupo");
+      return Response.json({ error: "Não foi possível mudar a descrição. Confira se você tem permissão para editar os dados deste grupo." }, { status: 502 });
     }
   }
 

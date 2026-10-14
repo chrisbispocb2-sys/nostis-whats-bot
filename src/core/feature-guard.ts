@@ -7,8 +7,10 @@ const BLOCKED_MESSAGE = "Essa funcionalidade não está liberada para sua conta.
 const RIDE_FIELDS = [
   "rideAssistantEnabled",
   "rideAutoChargeEnabled",
+  "rideChargeMessageEnabled",
   "rideChargeMessage",
   "rideChargeTrigger",
+  "rideChargeKeyword",
   "rideNear2MinMessage",
   "rideNear1MinMessage",
   "rideArrivedMessage",

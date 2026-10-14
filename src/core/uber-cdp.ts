@@ -17,7 +17,23 @@ export async function openUberStatusFetcher(shareToken: string): Promise<UberSta
   const port = await findFreePort();
   const profileDir = mkdtempSync(join(tmpdir(), "brinzy-uber-trip-"));
   const proc = Bun.spawn(
-    [browser, `--remote-debugging-port=${port}`, `--user-data-dir=${profileDir}`, "--headless=new", "--no-first-run", "--disable-gpu"],
+    [
+      browser,
+      `--remote-debugging-port=${port}`,
+      `--user-data-dir=${profileDir}`,
+      "--headless=new",
+      "--no-first-run",
+      "--disable-gpu",
+      // Enxuga o que o Chrome faz ao subir (sobe mais rápido e gasta menos — importante com várias
+      // corridas abrindo navegador ao mesmo tempo, que era quando mais falhava).
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-default-apps",
+      "--disable-sync",
+      "--no-default-browser-check",
+      "--disable-dev-shm-usage",
+      "--mute-audio",
+    ],
     { stdin: "ignore", stdout: "ignore", stderr: "ignore", windowsHide: true }
   );
 

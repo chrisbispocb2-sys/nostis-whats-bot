@@ -121,7 +121,11 @@ export function linkifyHtml(text) {
     if (!link) continue;
     const href = /^https?:\/\//i.test(link) ? link : `https://${link}`;
     html += escapeHtml(source.slice(last, match.index));
-    html += `<a class="chat-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(link)}</a>${escapeHtml(trailing)}`;
+    // Link de convite de grupo: clicar entra pela NOSSA conta (ver chat.js), em vez de abrir o navegador.
+    const isGroupInvite = /chat\.whatsapp\.com\//i.test(href);
+    const cls = isGroupInvite ? "chat-link chat-group-invite" : "chat-link";
+    const dataAttr = isGroupInvite ? ` data-group-link="${escapeHtml(href)}"` : "";
+    html += `<a class="${cls}"${dataAttr} href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(link)}</a>${escapeHtml(trailing)}`;
     last = match.index + match[0].length;
   }
   return html + escapeHtml(source.slice(last));

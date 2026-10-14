@@ -8,6 +8,8 @@ export interface LicensePayload {
   userId: string;
   username: string;
   role: UserRole;
+  /** Empresa a que a conta pertence (o id do líder dono). null/ausente = conta sem líder. */
+  leaderId?: string | null;
   createdAt: number;
   /** null = sem vencimento. */
   expiresAt: number | null;
@@ -17,6 +19,8 @@ export interface LicensePayload {
   issuedAt: number;
   /** Sem conseguir falar com o servidor, o programa segue funcionando com esta licença só até aqui. */
   validUntil: number;
+  /** Versão do app publicada pelo admin (botão "Baixar atualização"). null/ausente = nada publicado. */
+  release?: { version: string; url: string; notes: string } | null;
 }
 
 /**

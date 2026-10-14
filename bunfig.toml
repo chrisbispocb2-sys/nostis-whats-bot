@@ -1,2 +1,6 @@
 [install]
 exact = true
+
+[test]
+# Os pacotes de atualização do servidor trazem cópias soltas de arquivos (inclusive de teste) que só fazem sentido lá
+pathIgnorePatterns = ["atualizacoes-servidor/**"]

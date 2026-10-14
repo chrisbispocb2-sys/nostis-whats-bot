@@ -16,5 +16,6 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noPropertyAccessFromIndexSignature": true
-  }
+  },
+  "exclude": ["node_modules", "atualizacoes-servidor/*/arquivos"]
 }

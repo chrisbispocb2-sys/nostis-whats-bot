@@ -57,8 +57,11 @@ export class MessageHandler {
 
       // Em conversas com LID o contato vem oculto; ban, leads e regras usam o telefone real
       const contactJid = await identityService.resolveContactJid(sock, msg, remoteJid);
+      // Chave única da conversa: o telefone. Assim a mesma pessoa que chega ora por telefone, ora por
+      // @lid (migração de LID do WhatsApp) não vira duas conversas — e duplicatas antigas se fundem.
+      const canonicalJid = chats.canonicalPersonalJid(remoteJid, contactJid);
       await chats.prepareMentions(msg);
-      chats.recordIncoming(sock, msg, remoteJid, contactJid, false);
+      chats.recordIncoming(sock, msg, canonicalJid, contactJid, false);
 
       if (isBacklog) return;
 
@@ -85,7 +88,7 @@ export class MessageHandler {
 
         // É com quem você está falando agora (o botão de cobrança do painel usa isso)
         this.account.conversations.touch({
-          chatJid: remoteJid,
+          chatJid: canonicalJid,
           jids: [contactJid, remoteJid],
           phone,
           name: msg.pushName ?? null,
@@ -210,7 +213,11 @@ export class MessageHandler {
     if (!isPersonalChat(chatJid)) return;
 
     const isBot = this.account.sent.has(msg.key.id);
-    if (hasContent) this.account.chats.recordOutgoing(sock, msg, chatJid, false, isBot);
+    // Mesma chave única da conversa (o telefone) do lado de quem envia: o eco de uma cobrança/resposta
+    // sob @lid cai na MESMA conversa que as mensagens do cliente, em vez de abrir uma duplicada.
+    const contactJid = await identityService.resolveContactJid(sock, msg, chatJid);
+    const canonicalJid = this.account.chats.canonicalPersonalJid(chatJid, contactJid);
+    if (hasContent) this.account.chats.recordOutgoing(sock, msg, canonicalJid, false, isBot);
     if (isBot || !hasContent) return;
 
     // Link de corrida mandado pra essa conversa: pelo celular ou pelo painel, tanto faz — o painel já
@@ -221,17 +228,16 @@ export class MessageHandler {
     const sentAt = messageTimeMs(msg);
     const isRecent = sentAt === undefined || Date.now() - sentAt < RIDE_LINK_MAX_AGE_MS;
     if (content?.text && isRecent) {
-      this.account.maybeStartUberTripTracking(chatJid, content.text, { sentFromPanel: this.account.chats.wasSentFromPanel(msg.key.id) });
+      this.account.maybeStartUberTripTracking(canonicalJid, content.text, { sentFromPanel: this.account.chats.wasSentFromPanel(msg.key.id) });
     }
 
-    const contactJid = await identityService.resolveContactJid(sock, msg, chatJid);
-    const jids = [chatJid, msg.key.remoteJidAlt, contactJid].filter((j): j is string => !!j);
+    const jids = [chatJid, msg.key.remoteJidAlt, contactJid, canonicalJid].filter((j): j is string => !!j);
 
     this.account.greeting.cancelForChat(jids);
     this.account.guard.onOperatorReply(jids, messageTimeMs(msg));
 
     this.account.conversations.touch({
-      chatJid,
+      chatJid: canonicalJid,
       jids,
       phone: contactJid.endsWith("@s.whatsapp.net") ? phoneFromJid(contactJid) : null,
       name: null,

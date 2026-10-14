@@ -18,6 +18,11 @@ export class FakeSock {
   sent: SentMessage[] = [];
   presence: Array<{ state: string; jid: string }> = [];
   user = { id: "5511900000000:1@s.whatsapp.net" };
+  /**
+   * Credenciais do WhatsApp deste "computador" (o que o celular assina ao ler o QR Code). Testes
+   * preenchem pra simular computadores conectados na mesma conta — ou em contas diferentes.
+   */
+  authState: { creds: Record<string, unknown> } | undefined = undefined;
   /** Mapa LID → telefone que o "WhatsApp" conhece. */
   lidToPhone: Record<string, string> = {};
 
@@ -31,7 +36,11 @@ export class FakeSock {
   };
 
   signalRepository = {
-    lidMapping: { getPNForLID: async (lid: string) => this.lidToPhone[lid] ?? null },
+    lidMapping: {
+      getPNForLID: async (lid: string) => this.lidToPhone[lid] ?? null,
+      // Caminho inverso (telefone → LID), derivado do mesmo mapa que os testes preenchem.
+      getLIDForPN: async (pn: string) => Object.keys(this.lidToPhone).find((lid) => this.lidToPhone[lid] === pn) ?? null,
+    },
   };
 
   profilePictureUrl = async () => null;
@@ -45,6 +54,10 @@ export class FakeSock {
     // devolve um array — é o formato de verdade do baileys (uma entrada por participante)
     return participants.map((p) => ({ status: this.participantUpdateStatus, jid: p, content: {} as never }));
   };
+
+  /** Testes trocam pra simular o token do link de chamada (ou ausência dele). */
+  callLinkToken: string | undefined = "CALLTOKEN";
+  createCallLink = async (_type: "audio" | "video") => this.callLinkToken;
 
   /** Testes trocam pra simular um código de convite específico (ou ausência dele). */
   inviteCode: string | undefined = "ABC123";
@@ -63,6 +76,15 @@ export class FakeSock {
     this.joinRequestUpdates.push({ jid, participants, action });
     this.pendingJoinRequests = this.pendingJoinRequests.filter((r) => !participants.includes(r.jid));
     return participants.map((p) => ({ status: "200", jid: p }));
+  };
+
+  /** Descrições de grupo mudadas pelo painel, só anotadas (undefined = apagou a descrição). */
+  descriptionUpdates: Array<{ jid: string; description: string | undefined }> = [];
+  /** Testes ligam pra simular o WhatsApp recusando (sem permissão pra editar os dados do grupo). */
+  descriptionUpdateFails = false;
+  groupUpdateDescription = async (jid: string, description?: string) => {
+    if (this.descriptionUpdateFails) throw new Error("not-authorized");
+    this.descriptionUpdates.push({ jid, description });
   };
 
   /** Testes substituem por um valor próprio quando precisam verificar os dados do grupo. */
@@ -129,6 +151,11 @@ export class FakeConnection implements Connection {
   /** Simula o WhatsApp avisando que uma mensagem enviada mudou de status (entregue, lida...). */
   deliverStatus(chatJid: string, id: string, status: number): void {
     this.options.onMessageUpdate?.({ remoteJid: chatJid, id }, status);
+  }
+
+  /** Simula o WhatsApp entregando uma EDIÇÃO de mensagem (chega por messages.update, não como mensagem nova). */
+  deliverEdit(chatJid: string, id: string, message: WAMessage["message"]): void {
+    this.options.onMessageEdit?.({ remoteJid: chatJid, id }, message);
   }
 }
 

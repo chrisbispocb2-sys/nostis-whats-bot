@@ -1,12 +1,16 @@
 import { api, accountUrl } from "./api.js";
 import { state } from "./state.js";
 import { escapeHtml, linkifyHtml, formatDateTime, formatPhone, formatBRL, relativeTime, avatarHtml, avatarHue, phoneFromJid, fileToDataUrl } from "./utils.js";
-import { icon, notify, setBusy, emptyState, confirmDialog, promptDialog, bindModal, openModal, closeModal, isModalOpen } from "./ui.js";
+import { icon, notify, setBusy, emptyState, confirmDialog, promptDialog, bindModal, openModal, closeModal, isModalOpen, flagInvalid } from "./ui.js";
 import { registerContextMenuProvider } from "./context-menu.js";
 
 const PAGE_SIZE = 50;
 const NEAR_BOTTOM_PX = 100;
-const MAX_ATTACHMENT_MB = 16;
+// Limite por tipo, igual ao WhatsApp: fotos, vídeos e áudios vão comprimidos e ele aceita até 16 MB;
+// documento vai sem compressão e ele aceita até 100 MB. (O servidor do painel precisa aceitar um corpo
+// desse tamanho em base64 — ver `maxRequestBodySize` em core/dashboard.ts.)
+const MAX_MEDIA_MB = 16;
+const MAX_DOCUMENT_MB = 100;
 // Sem WebSocket conectado, lê com mais frequência; com ele ligado, a leitura periódica
 // só é rede de segurança (reconexão, evento perdido), então pode ser bem mais espaçada.
 const POLL_MS_NO_SOCKET = 3000;
@@ -38,6 +42,7 @@ const chatThreadAvatarEl = document.getElementById("chat-thread-avatar");
 const chatThreadNameEl = document.getElementById("chat-thread-name");
 const chatThreadSubEl = document.getElementById("chat-thread-sub");
 const chatSearchBtn = document.getElementById("chat-search-btn");
+const chatCallBtn = document.getElementById("chat-call-btn");
 const chatRideBarEl = document.getElementById("chat-ride-bar");
 const chatRideTitleEl = document.getElementById("chat-ride-title");
 const chatRideDetailEl = document.getElementById("chat-ride-detail");
@@ -62,6 +67,14 @@ const chatReplyPreview = document.getElementById("chat-reply-preview");
 const chatReplyCancel = document.getElementById("chat-reply-cancel");
 const chatComposeForm = document.getElementById("chat-compose");
 const chatInput = document.getElementById("chat-input");
+const chatMentionPopup = document.getElementById("chat-mention-popup");
+const chatNewConversationBtn = document.getElementById("chat-new-conversation-btn");
+const newChatModal = document.getElementById("new-chat-modal");
+const newChatSelfBtn = document.getElementById("new-chat-self-btn");
+const newChatPhoneForm = document.getElementById("new-chat-phone-form");
+const newChatPhoneInput = document.getElementById("new-chat-phone-input");
+const newChatContactSearch = document.getElementById("new-chat-contact-search");
+const newChatContactList = document.getElementById("new-chat-contact-list");
 const chatSendBtn = document.getElementById("chat-send");
 const chatAttachInput = document.getElementById("chat-attach-input");
 const chatAttachBtn = document.getElementById("chat-attach-btn");
@@ -88,6 +101,12 @@ const contactInfoAvatarEl = document.getElementById("contact-info-avatar");
 const contactInfoNameEl = document.getElementById("contact-info-name");
 const contactInfoSubEl = document.getElementById("contact-info-sub");
 const contactInfoDescEl = document.getElementById("contact-info-desc");
+const contactInfoDescEditBtn = document.getElementById("contact-info-desc-edit");
+const contactInfoDescEditLabel = document.getElementById("contact-info-desc-edit-label");
+const contactInfoDescEditor = document.getElementById("contact-info-desc-editor");
+const contactInfoDescInput = document.getElementById("contact-info-desc-input");
+const contactInfoDescCancelBtn = document.getElementById("contact-info-desc-cancel");
+const contactInfoDescSaveBtn = document.getElementById("contact-info-desc-save");
 const contactInfoPhoneRow = document.getElementById("contact-info-phone-row");
 const contactInfoPhoneEl = document.getElementById("contact-info-phone");
 const contactInfoMessageBtn = document.getElementById("contact-info-message");
@@ -102,6 +121,10 @@ const contactInfoMediaGrid = document.getElementById("contact-info-media-grid");
 const contactInfoGroupsSection = document.getElementById("contact-info-groups-section");
 const contactInfoGroupsTitle = document.getElementById("contact-info-groups-title");
 const contactInfoGroupsList = document.getElementById("contact-info-groups-list");
+const contactInfoChargeSection = document.getElementById("contact-info-charge-section");
+const contactInfoChargeForm = document.getElementById("contact-info-charge-form");
+const contactInfoChargeAmount = document.getElementById("contact-info-charge-amount");
+const contactInfoChargeSendBtn = document.getElementById("contact-info-charge-send");
 
 const groupParticipantsModal = document.getElementById("group-participants-modal");
 const groupParticipantsCountEl = document.getElementById("group-participants-count");
@@ -129,6 +152,9 @@ const settingsNavEl = quickReplyModal.querySelector(".modal-settings-nav");
 const rideAssistantEnabledInput = document.getElementById("ride-assistant-enabled");
 const rideChargeEnabledInput = document.getElementById("ride-charge-enabled");
 const rideChargeTriggerSelect = document.getElementById("ride-charge-trigger");
+const rideChargeKeywordInput = document.getElementById("ride-charge-keyword");
+const rideChargeMessageEnabledInput = document.getElementById("ride-charge-message-enabled");
+const rideChargeMessageField = document.getElementById("ride-charge-message-field");
 const rideChargeMessageInput = document.getElementById("ride-charge-message");
 let rideChargeMessageDefault = "";
 const rideVehicleDetailsInput = document.getElementById("ride-vehicle-details");
@@ -141,12 +167,20 @@ let chats = []; // /chats, mais recente (ou fixada) primeiro
 let archivedChats = [];
 let folders = []; // listas que você criou (ex.: "Clientes Premium")
 let folderChats = []; // conversas da pasta atualmente aberta
-let chatListFilter = ""; // pesquisa da LISTA de conversas (nome/número) — não confundir com a busca dentro de uma conversa
+let chatListFilter = ""; // pesquisa da LISTA de conversas (normalizada) — não confundir com a busca dentro de uma conversa
+let chatListQueryRaw = ""; // o mesmo texto da busca, sem normalizar (pra API e pra mostrar)
+let searchContacts = null; // { self, contacts } da "nova conversa", carregado 1x e cacheado pra busca
+let searchContactsLoading = false;
+let searchMessageResults = []; // mensagens achadas na busca global (conteúdo das conversas)
+let searchMessagesQuery = ""; // a query a que `searchMessageResults` pertence (evita mostrar resultado de outra busca)
+let searchMessagesToken = 0; // trava de corrida da busca de mensagens
+let searchMessagesTimer = null; // debounce da busca de mensagens
 let viewingArchived = false;
 let currentFolderId = null; // pasta atualmente aberta (substitui a lista principal), ou null
 let activeChatJid = null;
 let messages = []; // da conversa aberta, mais antiga primeiro (ordem de leitura)
 let hasMoreOlder = true;
+let olderCursor = null; // { before, beforeId } que o servidor devolve: de onde pedir a próxima página (mais antiga)
 let loadingMore = false;
 let sending = false;
 let chatListHtml = "";
@@ -225,6 +259,10 @@ export function resetChat() {
   loadQuickReplySettings();
   misticConfigured = false;
   loadMisticStatus();
+  // Busca: zera o cache de contatos (os salvos mudam por conta) e os resultados de mensagens
+  searchContacts = null;
+  searchMessageResults = [];
+  searchMessagesQuery = "";
 }
 
 function mediaUrl(m) {
@@ -253,6 +291,9 @@ async function markAllRead() {
   }
 }
 
+/** Formatos que o WhatsApp toca como mensagem de áudio (a mesma lista de `WHATSAPP_AUDIO_MIMES` em services/chat.service.ts). */
+const WHATSAPP_AUDIO_MIMES = new Set(["audio/ogg", "audio/opus", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a", "audio/x-m4a", "audio/aac", "audio/amr"]);
+
 function mediaTypeFromMime(mime) {
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("video/")) return "video";
@@ -276,12 +317,28 @@ function clearAttachment() {
 }
 
 function setAttachment(file) {
-  if (file.size > MAX_ATTACHMENT_MB * 1024 * 1024) {
-    notify.warning(`Esse arquivo passa de ${MAX_ATTACHMENT_MB} MB. Escolha um menor.`, { title: "Arquivo muito grande" });
+  let type = mediaTypeFromMime(file.type || "");
+  // Áudio num formato que o WhatsApp não toca (WAV, FLAC...): vai como arquivo, igual ao WhatsApp faz.
+  // Mandar como áudio "saía" sem erro e nunca chegava. O servidor aplica a mesma regra.
+  if (type === "audio" && !WHATSAPP_AUDIO_MIMES.has(file.type.split(";")[0].trim().toLowerCase())) {
+    type = "document";
+    notify.info("O WhatsApp não reproduz esse formato como áudio, então ele vai como arquivo (a pessoa abre e ouve normalmente). Para ir como áudio, use MP3, M4A ou OGG.", {
+      title: "Vai como arquivo",
+      duration: 9000,
+    });
+  }
+
+  // O limite depende do tipo, como no WhatsApp. Acima disso ele recusaria o envio, então nem adianta subir.
+  const limitMb = type === "document" ? MAX_DOCUMENT_MB : MAX_MEDIA_MB;
+  if (file.size > limitMb * 1024 * 1024) {
+    const message =
+      type === "document"
+        ? `Esse documento passa de ${MAX_DOCUMENT_MB} MB, o máximo que o WhatsApp aceita. Escolha um menor.`
+        : `Fotos, vídeos e áudios vão comprimidos e o WhatsApp aceita até ${MAX_MEDIA_MB} MB. Para mandar um arquivo maior, envie como documento (vai sem compressão, até ${MAX_DOCUMENT_MB} MB).`;
+    notify.warning(message, { title: "Arquivo muito grande" });
     chatAttachInput.value = "";
     return;
   }
-  const type = mediaTypeFromMime(file.type || "");
   // imagem colada (Ctrl+V) não vem com nome de arquivo
   const fileName = file.name || (type === "image" ? "imagem-colada.png" : "arquivo");
   pendingAttachment = { file, type, mimeType: file.type || "application/octet-stream", fileName };
@@ -336,7 +393,8 @@ function handleComposePaste(e) {
  */
 function displayName(c) {
   if (c.isGroup) return c.name || "Grupo sem nome";
-  return (c.phone ? formatPhone(c.phone) : null) || c.name || phoneFromJid(c.jid) || c.jid;
+  // Contato salvo pelo operador vem na frente de tudo (igual ao WhatsApp mostrar o nome do contato salvo).
+  return c.savedName || (c.phone ? formatPhone(c.phone) : null) || c.name || phoneFromJid(c.jid) || c.jid;
 }
 
 /** Em grupo, a prévia vem com "~Quem: o que escreveu", igual ao WhatsApp — no privado é só o texto. */
@@ -351,12 +409,12 @@ function normalizeForSearch(s) {
   return (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 
-/** Filtra a lista de conversas pelo nome OU pelo número (dígitos), igual à busca de conversas do WhatsApp. */
+/** Filtra a lista de conversas pelo nome (salvo ou do WhatsApp) OU pelo número (dígitos), igual ao WhatsApp. */
 function chatMatchesListFilter(c) {
   if (!chatListFilter) return true;
-  // Busca pelo nome que a pessoa usa no WhatsApp mesmo sem ser isso que aparece na lista (você
-  // pode lembrar do nome dela e não saber o número de cor).
-  if (normalizeForSearch(c.name || "").includes(chatListFilter)) return true;
+  // Nome salvo pelo operador (o que aparece na lista) e o nome do WhatsApp — você pode lembrar do nome
+  // dela e não saber o número de cor.
+  if (normalizeForSearch(`${c.savedName || ""} ${c.name || ""}`).includes(chatListFilter)) return true;
   const queryDigits = chatListFilter.replace(/\D/g, "");
   if (!queryDigits) return false;
   return (c.phone || phoneFromJid(c.jid)).replace(/\D/g, "").includes(queryDigits);
@@ -525,6 +583,15 @@ function chatListItemHtml(c) {
 }
 
 function renderChatList() {
+  // Busca na lista principal → resultado em seções (Conversas / Começar conversa / Mensagens), estilo
+  // WhatsApp. Em "Arquivadas" ou dentro de uma lista, a busca continua filtrando só aquela visão.
+  const searching = !!chatListFilter && !viewingArchived && !currentFolderId;
+  if (chatListPaneEl) chatListPaneEl.classList.toggle("is-searching", searching);
+  if (searching) {
+    renderChatSearchResults();
+    return;
+  }
+
   const visible = chats.filter(chatMatchesListFilter);
   const html = chats.length
     ? visible.length
@@ -550,6 +617,145 @@ function renderChatList() {
     archivedListHtml = archivedHtml;
     chatArchivedList.innerHTML = archivedHtml;
   }
+}
+
+/* ---------- Busca da lista estilo WhatsApp (Conversas / Começar conversa / Mensagens) ---------- */
+
+function dedupeByJid(list) {
+  const seen = new Set();
+  return list.filter((c) => (seen.has(c.jid) ? false : seen.add(c.jid)));
+}
+
+/** "Você" aparece ao digitar o número, "eu", "você", "comigo", "mesmo"... (pra conversar comigo mesmo). */
+function selfMatchesQuery(self, q) {
+  if (q.length < 2) return false;
+  if (normalizeForSearch("voce você eu mim comigo mesmo meu numero").includes(q)) return true;
+  const digits = q.replace(/\D/g, "");
+  return digits.length >= 2 && (self.phone || "").replace(/\D/g, "").includes(digits);
+}
+
+function searchSectionHtml(title, inner) {
+  return `<li class="chat-search-section">${escapeHtml(title)}</li>${inner}`;
+}
+
+function searchEmptyLineHtml(text) {
+  return `<li class="chat-search-note">${escapeHtml(text)}</li>`;
+}
+
+function startContactRowHtml({ self = false, jid = "", name, phone }) {
+  const sub = phone ? formatPhone(phone) : "";
+  return `
+    <li>
+      <div class="chat-list-item chat-search-contact" ${self ? 'data-start-self="1"' : `data-start-jid="${escapeHtml(jid)}"`} role="button" tabindex="0">
+        ${avatarHtml(name, { size: "sm", pictureUrl: self ? null : pictureUrlFor(jid) })}
+        <div class="chat-list-item-body">
+          <div class="chat-list-item-top"><span class="chat-list-item-name"><span>${escapeHtml(name)}</span></span></div>
+          ${sub ? `<div class="chat-list-item-bottom"><span class="chat-list-item-preview">${escapeHtml(sub)}</span></div>` : ""}
+        </div>
+      </div>
+    </li>`;
+}
+
+function messageResultRowHtml(m) {
+  const title = m.isGroup
+    ? m.name || "Grupo sem nome"
+    : m.savedName || (m.phone ? formatPhone(m.phone) : null) || m.name || phoneFromJid(m.chatJid);
+  const who = m.isGroup ? (m.fromMe ? "Você: " : m.senderName ? `~${m.senderName}: ` : "") : "";
+  const snippet = `${who}${m.text || ""}`;
+  return `
+    <li>
+      <div class="chat-list-item chat-search-msg" data-msg-jid="${escapeHtml(m.chatJid)}" data-msg-id="${escapeHtml(m.id)}" data-msg-ts="${m.timestamp || 0}" role="button" tabindex="0">
+        ${avatarHtml(title, { size: "sm", pictureUrl: pictureUrlFor(m.chatJid) })}
+        <div class="chat-list-item-body">
+          <div class="chat-list-item-top">
+            <span class="chat-list-item-name"><span>${escapeHtml(title)}</span></span>
+            <span class="chat-list-item-time">${m.timestamp ? relativeTime(m.timestamp) : ""}</span>
+          </div>
+          <div class="chat-list-item-bottom"><span class="chat-list-item-preview">${escapeHtml(snippet)}</span></div>
+        </div>
+      </div>
+    </li>`;
+}
+
+function renderChatSearchResults() {
+  const q = chatListFilter;
+  const convos = dedupeByJid([...chats, ...archivedChats]).filter(chatMatchesListFilter);
+  const convoJids = new Set(convos.map((c) => c.jid));
+
+  // Começar conversa: você mesmo + contatos salvos que batem e ainda não têm conversa aberta
+  const startRows = [];
+  if (searchContacts) {
+    if (searchContacts.self && selfMatchesQuery(searchContacts.self, q) && !convoJids.has(searchContacts.self.jid)) {
+      startRows.push(startContactRowHtml({ self: true, jid: searchContacts.self.jid, name: "Você (conversar comigo mesmo)", phone: searchContacts.self.phone }));
+    }
+    for (const c of searchContacts.contacts || []) {
+      if (convoJids.has(c.jid)) continue;
+      if (!normalizeForSearch(`${c.name} ${c.phone || ""}`).includes(q)) continue;
+      startRows.push(startContactRowHtml({ jid: c.jid, name: c.name, phone: c.phone }));
+    }
+  }
+
+  // Mensagens: resultados da busca global (só se pertencem à query atual; senão, "buscando…")
+  const msgsReady = searchMessagesQuery === chatListQueryRaw;
+  const msgRows = msgsReady ? searchMessageResults.map(messageResultRowHtml).join("") : "";
+
+  let html = searchSectionHtml("Conversas", convos.length ? convos.map(chatListItemHtml).join("") : searchEmptyLineHtml("Nenhuma conversa"));
+  if (startRows.length) html += searchSectionHtml("Começar conversa", startRows.join(""));
+  html += searchSectionHtml(
+    "Mensagens",
+    msgsReady ? (msgRows || searchEmptyLineHtml("Nenhuma mensagem encontrada")) : searchEmptyLineHtml("Buscando…")
+  );
+
+  chatListEl.innerHTML = html;
+  chatListHtml = ""; // invalida o cache pra redesenhar normal ao sair da busca
+}
+
+/** Carrega as partes assíncronas da busca: contatos (1x) + mensagens (com debounce). */
+function loadSearchExtras() {
+  // Contatos (você + salvos): busca uma vez e reaproveita durante a sessão
+  if (!searchContacts && !searchContactsLoading) {
+    searchContactsLoading = true;
+    api("/chats/contacts")
+      .then((res) => {
+        searchContacts = res;
+        if (chatListFilter && !viewingArchived && !currentFolderId) renderChatList();
+      })
+      .catch(() => {
+        searchContacts = { self: null, contacts: [] };
+      })
+      .finally(() => {
+        searchContactsLoading = false;
+      });
+  }
+
+  // Mensagens (conteúdo das conversas): debounce pra não buscar a cada tecla
+  clearTimeout(searchMessagesTimer);
+  const q = chatListQueryRaw;
+  if (q.length < 2) {
+    searchMessageResults = [];
+    searchMessagesQuery = "";
+    return;
+  }
+  const token = ++searchMessagesToken;
+  searchMessagesTimer = setTimeout(async () => {
+    try {
+      const { messages: results } = await api(`/chats/search?q=${encodeURIComponent(q)}`);
+      if (token !== searchMessagesToken) return; // a query mudou enquanto buscava
+      searchMessageResults = results;
+      searchMessagesQuery = q;
+      if (chatListFilter && !viewingArchived && !currentFolderId) renderChatList();
+    } catch {
+      // tenta de novo na próxima tecla
+    }
+  }, 250);
+}
+
+/** Abre a conversa e rola até a mensagem encontrada na busca (sai do modo de busca). */
+async function openChatAtMessage(jid, id, ts) {
+  clearChatListFilter();
+  renderChatList();
+  await openChat(jid);
+  await jumpToMessage(id, ts);
 }
 
 /** As linhas de "entrar" numa pasta (uma por lista criada), abaixo de "Arquivadas". */
@@ -592,7 +798,12 @@ function findChat(jid) {
 
 function clearChatListFilter() {
   chatListFilter = "";
+  chatListQueryRaw = "";
   chatListSearchInput.value = "";
+  searchMessageResults = [];
+  searchMessagesQuery = "";
+  clearTimeout(searchMessagesTimer);
+  if (chatListPaneEl) chatListPaneEl.classList.remove("is-searching");
 }
 
 function showMainView() {
@@ -687,6 +898,11 @@ function buildChatItemMenuItems(chat, anchor) {
       run: () => removeFromCurrentFolder(chat),
     });
   }
+  // Salvar contato: só para conversa privada (grupo não é contato).
+  if (!chat.isGroup) {
+    items.push({ action: "save-contact", icon: "pencil", label: "Salvar contato", run: () => saveContactFor(chat) });
+  }
+  items.push({ action: "delete-chat", icon: "trash", label: "Excluir conversa", danger: true, run: () => deleteChatConversation(chat) });
   return items;
 }
 
@@ -700,6 +916,79 @@ async function togglePin(chat, pinned, temporary = false) {
     await refreshChat();
   } catch (err) {
     notify.error(err.message, { title: "Não foi possível fixar/desafixar" });
+  }
+}
+
+async function saveContactFor(chat) {
+  const name = await promptDialog({ title: "Salvar contato", label: "Nome do contato", value: chat.name || "", placeholder: "Nome da pessoa" });
+  if (name === null || !name.trim()) return;
+  try {
+    await api(`/chats/${encodeURIComponent(chat.jid)}/save-contact`, { method: "POST", body: { name: name.trim() } });
+    notify.success("Contato salvo.", { duration: 1800 });
+    await refreshChat();
+    if (chat.jid === activeChatJid) paintThreadHeader();
+  } catch (err) {
+    notify.error(err.message, { title: "Não foi possível salvar o contato" });
+  }
+}
+
+/**
+ * "Ligar" para o cliente. O WhatsApp (pelo protocolo que o bot usa) não deixa "tocar" direto, mas deixa
+ * criar um LINK de chamada: o bot cria o link, manda pro cliente nesta conversa e mostra pra você entrar.
+ * Você entra pelo WhatsApp (celular ou Desktop) conectado nesta conta.
+ */
+async function startCall(type) {
+  if (!activeChatJid) return;
+  const label = type === "video" ? "videochamada" : "chamada";
+  try {
+    const { link } = await api(`/chats/${encodeURIComponent(activeChatJid)}/call-link`, { method: "POST", body: { type, send: true } });
+    await refreshChat();
+    const open = await confirmDialog({
+      title: `${label.charAt(0).toUpperCase()}${label.slice(1)} criada`,
+      message: `O link foi enviado ao cliente nesta conversa. Para você entrar na ${label}, abra o link no WhatsApp conectado nesta conta (celular ou WhatsApp Desktop):\n\n${link}`,
+      confirmText: "Abrir para entrar",
+    });
+    if (open) window.open(link, "_blank", "noopener");
+  } catch (err) {
+    notify.error(err.message, { title: `Não foi possível iniciar a ${label}` });
+  }
+}
+
+async function joinGroupByLink(link) {
+  if (!link) return;
+  try {
+    const info = await api("/groups/invite-info", { method: "POST", body: { link } });
+    const sizeText = info.size ? ` · ${info.size} participantes` : "";
+    const confirmed = await confirmDialog({
+      title: "Entrar neste grupo?",
+      message: `Entrar no grupo "${info.name || "sem nome"}"${sizeText} com esta conta de WhatsApp? Se o grupo exigir aprovação de um admin, sua entrada fica como solicitação até ele aceitar.`,
+      confirmText: "Entrar no grupo",
+    });
+    if (!confirmed) return;
+    await api("/groups/invite-join", { method: "POST", body: { code: info.code } });
+    notify.success("Pronto! Você entrou no grupo (ou enviou a solicitação, se ele exige aprovação). Ele aparece na aba Grupos em instantes.", {
+      title: "Grupo",
+      duration: 6000,
+    });
+  } catch (err) {
+    notify.error(err.message, { title: "Não foi possível entrar no grupo" });
+  }
+}
+
+async function deleteChatConversation(chat) {
+  const confirmed = await confirmDialog({
+    title: "Excluir esta conversa?",
+    message: "Ela some do painel (mensagens e histórico). Não apaga nada no WhatsApp — se a pessoa mandar mensagem de novo, a conversa reaparece.",
+    confirmText: "Excluir",
+    tone: "danger",
+  });
+  if (!confirmed) return;
+  try {
+    await api(`/chats/${encodeURIComponent(chat.jid)}`, { method: "DELETE" });
+    if (chat.jid === activeChatJid) closeThread();
+    await refreshChat();
+  } catch (err) {
+    notify.error(err.message, { title: "Não foi possível excluir a conversa" });
   }
 }
 
@@ -745,6 +1034,9 @@ async function toggleChatInFolder(folderId, chat, isMember) {
     if (isMember) await api(`/folders/${encodeURIComponent(folderId)}/chats/${encodeURIComponent(chat.jid)}`, { method: "DELETE" });
     else await api(`/folders/${encodeURIComponent(folderId)}/chats`, { method: "POST", body: { chatJid: chat.jid } });
     notify.success(isMember ? "Removida da lista." : "Adicionada à lista.", { duration: 1500 });
+    // Atualiza a lista principal na hora (a conversa sai dela ao entrar numa pasta, ou volta ao sair),
+    // sem esperar o próximo ciclo de leitura — e a pasta aberta, se for o caso.
+    await refreshChat();
     if (currentFolderId === folderId) await refreshFolderView();
   } catch (err) {
     notify.error(err.message, { title: "Não foi possível atualizar a lista" });
@@ -761,6 +1053,7 @@ async function createFolderAndAdd(chat) {
     if (chat) {
       await api(`/folders/${encodeURIComponent(folder.id)}/chats`, { method: "POST", body: { chatJid: chat.jid } });
       notify.success(`Lista "${folder.name}" criada e conversa adicionada.`, { duration: 2500 });
+      await refreshChat(); // tira da principal na hora
     } else {
       notify.success(`Lista "${folder.name}" criada.`, { duration: 2000 });
     }
@@ -774,6 +1067,7 @@ async function removeFromCurrentFolder(chat) {
   try {
     await api(`/folders/${encodeURIComponent(currentFolderId)}/chats/${encodeURIComponent(chat.jid)}`, { method: "DELETE" });
     await refreshFolderView();
+    await refreshChat(); // volta pra principal na hora
   } catch (err) {
     notify.error(err.message, { title: "Não foi possível remover da lista" });
   }
@@ -801,6 +1095,23 @@ async function deleteFolderConfirm(folder) {
   }
 }
 
+function activateChatListRow(row) {
+  // Resultado de busca "Começar conversa" (você mesmo ou um contato salvo sem conversa ainda)
+  if (row.classList.contains("chat-search-contact")) {
+    clearChatListFilter();
+    renderChatList();
+    if (row.dataset.startSelf) startNewChat({ self: true });
+    else if (row.dataset.startJid) startNewChat({ jid: row.dataset.startJid });
+    return;
+  }
+  // Resultado de busca "Mensagens": abre a conversa e rola até a mensagem citada
+  if (row.classList.contains("chat-search-msg")) {
+    openChatAtMessage(row.dataset.msgJid, row.dataset.msgId, Number(row.dataset.msgTs) || 0);
+    return;
+  }
+  openChat(row.dataset.jid);
+}
+
 function handleChatListClick(e) {
   const menuBtn = e.target.closest(".chat-list-item-menu-btn[data-menu-jid]");
   if (menuBtn) {
@@ -809,7 +1120,7 @@ function handleChatListClick(e) {
     return;
   }
   const item = e.target.closest(".chat-list-item");
-  if (item) openChat(item.dataset.jid);
+  if (item) activateChatListRow(item);
 }
 
 function handleChatListKeydown(e) {
@@ -817,7 +1128,7 @@ function handleChatListKeydown(e) {
   const item = e.target.closest(".chat-list-item");
   if (!item) return;
   e.preventDefault();
-  openChat(item.dataset.jid);
+  activateChatListRow(item);
 }
 
 function handleNavRowsClick(e) {
@@ -846,7 +1157,8 @@ function quotedPreviewHtml(q) {
   if (!q) return "";
   const who = q.fromMe ? "Você" : q.pushName || "Contato";
   const text = q.type === "text" ? q.text || "" : `${PREVIEW_ICONS[q.type] || ""} ${quotedLabel(q.type)}`.trim();
-  return `<div class="chat-quote"><strong>${escapeHtml(who)}</strong><span>${escapeHtml(text)}</span></div>`;
+  // Clicável: leva até a mensagem citada (igual ao WhatsApp) — ver o handler em chatMessagesListEl.
+  return `<div class="chat-quote is-clickable" data-quoted-id="${escapeHtml(q.id)}" data-quoted-ts="${q.timestamp ?? 0}" title="Ir até a mensagem"><strong>${escapeHtml(who)}</strong><span>${escapeHtml(text)}</span></div>`;
 }
 
 /** Emojis de quem reagiu, como um chip sobre o canto da bolha. */
@@ -984,7 +1296,7 @@ function messageBubbleHtml(m, isGroup) {
       ${senderHtml(m, isGroup)}
       ${quotedPreviewHtml(m.quotedPreview)}
       ${messageBodyHtml(m)}
-      <span class="chat-bubble-time">${formatDateTime(m.timestamp)}${statusHtml(m)}</span>
+      <span class="chat-bubble-time">${m.edited ? "editada · " : ""}${formatDateTime(m.timestamp)}${statusHtml(m)}</span>
       ${reactionsHtml(m)}
     </div>`;
   return `
@@ -1001,6 +1313,9 @@ function buildMessageMenuItems(message) {
   if (canForward(message.type)) items.push({ action: "forward", icon: "forward", label: "Encaminhar", run: () => openForwardModal(message) });
   if (message.type === "sticker" && message.mediaFile) {
     items.push({ action: "save-sticker", icon: "sticker", label: "Salvar figurinha", run: () => saveStickerToLibrary(message) });
+  }
+  if (message.fromMe && message.type === "text") {
+    items.push({ action: "edit", icon: "pencil", label: "Editar", run: () => editMessage(message) });
   }
   items.push({ action: "delete-me", icon: "trash", label: "Apagar para mim", run: () => deleteForMe(message) });
   if (message.fromMe && message.type !== "revoked") {
@@ -1169,6 +1484,29 @@ async function deleteForMe(message) {
   }
 }
 
+async function editMessage(message) {
+  const text = await promptDialog({
+    title: "Editar mensagem",
+    label: "Novo texto",
+    value: message.text || "",
+    confirmText: "Salvar",
+  });
+  if (text === null) return; // cancelou
+  const trimmed = text.trim();
+  if (!trimmed || trimmed === (message.text || "")) return; // vazio ou sem mudança: não faz nada
+  try {
+    const { message: updated } = await api(
+      `/chats/${encodeURIComponent(message.chatJid)}/messages/${encodeURIComponent(message.id)}/edit`,
+      { method: "POST", body: { text: trimmed } }
+    );
+    mergeMessages([updated]);
+    renderMessages();
+    await refreshChat();
+  } catch (err) {
+    notify.error(err.message, { title: "Não foi possível editar" });
+  }
+}
+
 async function deleteForEveryone(message) {
   const confirmed = await confirmDialog({
     title: "Apagar para todos?",
@@ -1293,8 +1631,10 @@ function closeSearch() {
 async function jumpToMessage(id, timestamp) {
   if (!messages.some((m) => m.id === id)) {
     try {
-      const { messages: page } = await api(`/chats/${encodeURIComponent(activeChatJid)}/messages?before=${timestamp + 1}&limit=${PAGE_SIZE}`);
-      if (page.length < PAGE_SIZE) hasMoreOlder = false;
+      const { messages: page, hasMore, cursor } = await api(`/chats/${encodeURIComponent(activeChatJid)}/messages?before=${timestamp + 1}&limit=${PAGE_SIZE}`);
+      // Pulou pra um trecho mais antigo: é dali que o "carregar anteriores" continua
+      hasMoreOlder = hasMore;
+      if (cursor) olderCursor = cursor;
       mergeMessages(page);
       renderMessages();
     } catch {
@@ -1339,6 +1679,13 @@ function goToSearchResult(delta) {
 chatSearchBtn.addEventListener("click", () => {
   if (chatSearchBar.classList.contains("hidden")) openSearch();
   else closeSearch();
+});
+chatCallBtn?.addEventListener("click", () => {
+  if (!activeChatJid) return;
+  openDropdown(chatCallBtn, [
+    { action: "call-audio", icon: "phone", label: "Ligar (voz)", run: () => startCall("audio") },
+    { action: "call-video", icon: "video", label: "Videochamada", run: () => startCall("video") },
+  ]);
 });
 chatSearchClose.addEventListener("click", closeSearch);
 chatSearchInput.addEventListener("input", () => {
@@ -1536,12 +1883,25 @@ function renderMessages({ forceScrollBottom = false } = {}) {
   const wasNearBottom = chatMessagesEl.scrollHeight - chatMessagesEl.scrollTop - chatMessagesEl.clientHeight < NEAR_BOTTOM_PX;
   messagesKey = key;
 
+  // Áudios que você está ouvindo (ou já começou): recriar o <audio> pararia o áudio. Guarda os nós
+  // VIVOS e recoloca-os no DOM novo no MESMO passo síncrono — o navegador só pausaria um <audio>
+  // removido no próximo "estado estável"; recolocar antes disso mantém o áudio tocando sem cortar.
+  const liveAudios = [...chatMessagesListEl.querySelectorAll("audio.chat-bubble-audio")]
+    .filter((a) => !a.paused || a.currentTime > 0)
+    .map((a) => ({ node: a, id: a.closest("[data-id]")?.dataset.id }));
+
   const chat = findChat(activeChatJid);
   const isGroup = chat ? chat.isGroup : (activeChatJid || "").endsWith("@g.us");
 
   chatMessagesListEl.innerHTML = messages.length
     ? messages.map((m) => messageBubbleHtml(m, isGroup)).join("")
     : `<div class="empty-state"><span class="empty-icon">${icon("message")}</span><h3>Nenhuma mensagem ainda</h3></div>`;
+
+  for (const { node, id } of liveAudios) {
+    if (!id) continue;
+    const placeholder = chatMessagesListEl.querySelector(`[data-id="${CSS.escape(id)}"] audio.chat-bubble-audio`);
+    if (placeholder) placeholder.replaceWith(node); // mantém o nó que está tocando, no lugar do novo
+  }
 
   chatLoadMoreBtn.classList.toggle("hidden", !hasMoreOlder);
 
@@ -1581,12 +1941,15 @@ function paintThreadHeader() {
 
 function closeThread() {
   activeChatJid = null;
+  state.activeChatJid = null;
   messages = [];
   messagesKey = "";
   hasMoreOlder = true;
+  olderCursor = null;
   clearAttachment();
   cancelReply();
   closeSearch();
+  hideMentionPopup();
   hideRideBar();
   chatThreadEl.classList.add("hidden");
   chatThreadEmptyEl.classList.remove("hidden");
@@ -1598,12 +1961,15 @@ function closeThread() {
 async function openChat(jid) {
   if (jid === activeChatJid) return;
   activeChatJid = jid;
+  state.activeChatJid = jid; // compartilhado: a cobrança usa pra já sugerir o cliente da conversa aberta
   messages = [];
   messagesKey = "";
   hasMoreOlder = true;
+  olderCursor = null;
   clearAttachment();
   cancelReply();
   closeSearch();
+  hideMentionPopup();
   newBelowCount = 0;
   chatScrollBottomBtn.classList.add("hidden");
   hideRideBar(); // a faixa era da conversa anterior; a desta é lida logo abaixo
@@ -1622,9 +1988,13 @@ async function openChat(jid) {
   chatMessagesListEl.innerHTML = `<div class="empty-state"><span class="spinner"></span></div>`;
 
   try {
-    const { messages: page } = await api(`/chats/${encodeURIComponent(jid)}/messages?limit=${PAGE_SIZE}`);
+    const { messages: page, hasMore, cursor } = await api(`/chats/${encodeURIComponent(jid)}/messages?limit=${PAGE_SIZE}`);
     if (jid !== activeChatJid) return; // trocou de conversa enquanto carregava
-    if (page.length < PAGE_SIZE) hasMoreOlder = false;
+    // Quem diz se ainda tem mensagem mais antiga é o servidor. Contar o que chegou não serve: as
+    // reações vêm anexadas à mensagem alvo, então uma página cheia chega com menos de PAGE_SIZE itens
+    // — o botão de carregar anteriores sumia e o histórico antigo parecia ter sido apagado.
+    hasMoreOlder = hasMore;
+    olderCursor = cursor;
     mergeMessages(page);
     renderMessages({ forceScrollBottom: true });
   } catch (err) {
@@ -1633,19 +2003,26 @@ async function openChat(jid) {
 }
 
 async function loadOlderMessages() {
-  if (!activeChatJid || loadingMore || !hasMoreOlder || messages.length === 0) return;
+  if (!activeChatJid || loadingMore || !hasMoreOlder || !olderCursor) return;
   loadingMore = true;
   setBusy(chatLoadMoreBtn, true);
   const jid = activeChatJid;
   try {
-    const oldest = messages[0];
-    const { messages: older } = await api(`/chats/${encodeURIComponent(jid)}/messages?before=${oldest.timestamp}&limit=${PAGE_SIZE}`);
-    if (jid !== activeChatJid) return;
-    if (older.length < PAGE_SIZE) hasMoreOlder = false;
+    const older = [];
+    // Uma página pode vir só com reações (nada pra mostrar): segue pedindo até aparecer mensagem ou o histórico acabar
+    for (let attempt = 0; attempt < 10 && hasMoreOlder && olderCursor && older.length === 0; attempt++) {
+      const { before, beforeId } = olderCursor;
+      const page = await api(`/chats/${encodeURIComponent(jid)}/messages?before=${before}&beforeId=${encodeURIComponent(beforeId)}&limit=${PAGE_SIZE}`);
+      if (jid !== activeChatJid) return;
+      hasMoreOlder = page.hasMore;
+      if (page.cursor) olderCursor = page.cursor;
+      older.push(...page.messages);
+    }
 
     const prevHeight = chatMessagesEl.scrollHeight;
     mergeMessages(older);
     renderMessages();
+    chatLoadMoreBtn.classList.toggle("hidden", !hasMoreOlder); // mesmo se nada novo foi desenhado (o histórico acabou)
     chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight - prevHeight;
   } catch (err) {
     notify.error(err.message, { title: "Não foi possível carregar mensagens antigas" });
@@ -1870,6 +2247,175 @@ async function maybeStartUberTripTracking(jid, text) {
   } catch (err) {
     notify.error(err.message, { title: "Não foi possível acompanhar essa corrida" });
   }
+}
+
+/* ---------- Nova conversa (comigo mesmo, contato salvo ou número) ---------- */
+
+let savedContacts = [];
+
+async function openNewChatModal() {
+  newChatPhoneInput.value = "";
+  newChatContactSearch.value = "";
+  newChatSelfBtn.classList.add("hidden");
+  newChatContactList.innerHTML = `<li class="stack-empty"><span class="spinner"></span></li>`;
+  openModal(newChatModal);
+  try {
+    const { self, contacts } = await api("/chats/contacts");
+    savedContacts = contacts || [];
+    if (self?.jid) {
+      newChatSelfBtn.dataset.jid = self.jid;
+      newChatSelfBtn.classList.remove("hidden");
+    }
+    renderNewChatContacts();
+  } catch (err) {
+    newChatContactList.innerHTML = `<li class="stack-empty">${escapeHtml(err.message)}</li>`;
+  }
+}
+
+function renderNewChatContacts() {
+  const q = normalizeForSearch(newChatContactSearch.value.trim());
+  const list = savedContacts.filter((c) => !q || normalizeForSearch(`${c.name} ${c.phone || ""}`).includes(q));
+  if (!list.length) {
+    newChatContactList.innerHTML = `<li class="stack-empty">${savedContacts.length ? "Nenhum contato encontrado." : "Você ainda não salvou nenhum contato."}</li>`;
+    return;
+  }
+  newChatContactList.innerHTML = list
+    .map(
+      (c) => `
+      <li class="stack-item" data-jid="${escapeHtml(c.jid)}" role="button" tabindex="0">
+        <div class="stack-main">
+          ${avatarHtml(c.name, { size: "sm", pictureUrl: pictureUrlFor(c.jid) })}
+          <div class="stack-text"><strong>${escapeHtml(c.name)}</strong>${c.phone ? `<span>${escapeHtml(formatPhone(c.phone))}</span>` : ""}</div>
+        </div>
+      </li>`
+    )
+    .join("");
+}
+
+async function startNewChat(body) {
+  try {
+    const { chatJid } = await api("/chats/open", { method: "POST", body });
+    closeModal(newChatModal);
+    await refreshChatList();
+    await openChat(chatJid);
+  } catch (err) {
+    notify.error(err.message, { title: "Não foi possível abrir a conversa" });
+  }
+}
+
+/* ---------- Marcação (@) de participantes num grupo ---------- */
+
+// Participantes do grupo aberto, em cache pra não buscar a cada tecla: { jid, list }.
+let mentionCache = null;
+let mentionMatches = [];
+let mentionActiveIndex = 0;
+let mentionTokenStart = -1; // posição do "@" que está sendo digitado, ou -1
+
+function activeChatIsGroup() {
+  return (activeChatJid || "").endsWith("@g.us");
+}
+
+function hideMentionPopup() {
+  mentionTokenStart = -1;
+  mentionMatches = [];
+  chatMentionPopup.classList.add("hidden");
+  chatMentionPopup.innerHTML = "";
+}
+
+async function ensureMentionParticipants(jid) {
+  if (mentionCache?.jid === jid) return mentionCache.list;
+  try {
+    const { participants } = await api(`/groups/metadata/${encodeURIComponent(jid)}`);
+    // Só dá pra marcar por número quem tem telefone e não é você mesmo.
+    const list = (participants || []).filter((p) => p.phone && !p.isSelf);
+    mentionCache = { jid, list };
+    return list;
+  } catch {
+    mentionCache = { jid, list: [] };
+    return [];
+  }
+}
+
+// Acha um "@consulta" logo antes do cursor (começo do texto ou depois de um espaço/quebra de linha).
+function mentionQueryBeforeCaret() {
+  const caret = chatInput.selectionStart ?? chatInput.value.length;
+  const upToCaret = chatInput.value.slice(0, caret);
+  const m = upToCaret.match(/(^|\s)@([\p{L}\p{N}._-]*)$/u);
+  if (!m) return null;
+  return { start: caret - m[2].length - 1, query: m[2] };
+}
+
+async function updateMentionPopup() {
+  if (!activeChatIsGroup()) return hideMentionPopup();
+  const found = mentionQueryBeforeCaret();
+  if (!found) return hideMentionPopup();
+
+  const list = await ensureMentionParticipants(activeChatJid);
+  const current = mentionQueryBeforeCaret(); // o cursor pode ter mudado enquanto buscava
+  if (!current) return hideMentionPopup();
+  const q = normalizeForSearch(current.query);
+  mentionMatches = list
+    .filter((p) => !q || normalizeForSearch(`${p.name || ""} ${p.phone}`).includes(q))
+    .slice(0, 8);
+  if (!mentionMatches.length) return hideMentionPopup();
+
+  mentionTokenStart = current.start;
+  mentionActiveIndex = 0;
+  renderMentionPopup();
+}
+
+function renderMentionPopup() {
+  chatMentionPopup.innerHTML = mentionMatches
+    .map((p, i) => {
+      const name = p.name || formatPhone(p.phone);
+      return `
+      <button type="button" class="chat-mention-item ${i === mentionActiveIndex ? "is-active" : ""}" data-index="${i}" role="option">
+        ${avatarHtml(name, { size: "sm", pictureUrl: pictureUrlFor(p.jid) })}
+        <span class="chat-mention-name">${escapeHtml(name)}</span>
+        <span class="chat-mention-phone">${escapeHtml(formatPhone(p.phone))}</span>
+      </button>`;
+    })
+    .join("");
+  chatMentionPopup.classList.remove("hidden");
+}
+
+// Troca o "@consulta" que está sendo digitado por "@número " (o que o WhatsApp usa pra marcar).
+function applyMention(participant) {
+  if (mentionTokenStart < 0) return;
+  const caret = chatInput.selectionStart ?? chatInput.value.length;
+  const before = chatInput.value.slice(0, mentionTokenStart);
+  const after = chatInput.value.slice(caret);
+  const token = `@${participant.phone} `;
+  chatInput.value = before + token + after;
+  const pos = before.length + token.length;
+  chatInput.setSelectionRange(pos, pos);
+  hideMentionPopup();
+  autoGrowComposeInput();
+  chatInput.focus();
+}
+
+// Devolve true se a tecla foi tratada pelo popup (pra o compose não enviar/mover o cursor).
+function handleMentionKeydown(e) {
+  if (chatMentionPopup.classList.contains("hidden") || !mentionMatches.length) return false;
+  if (e.key === "ArrowDown") {
+    mentionActiveIndex = (mentionActiveIndex + 1) % mentionMatches.length;
+    renderMentionPopup();
+    return true;
+  }
+  if (e.key === "ArrowUp") {
+    mentionActiveIndex = (mentionActiveIndex - 1 + mentionMatches.length) % mentionMatches.length;
+    renderMentionPopup();
+    return true;
+  }
+  if (e.key === "Enter" || e.key === "Tab") {
+    applyMention(mentionMatches[mentionActiveIndex]);
+    return true;
+  }
+  if (e.key === "Escape") {
+    hideMentionPopup();
+    return true;
+  }
+  return false;
 }
 
 async function sendMessage() {
@@ -2318,6 +2864,89 @@ function switchToChat(jid) {
   openChat(jid);
 }
 
+/** Mostra a descrição do grupo na janela de dados (some se estiver vazia) e ajusta o texto do botão de editar. */
+function paintGroupDescription(description) {
+  contactInfoDescEl.textContent = description || "";
+  contactInfoDescEl.classList.toggle("hidden", !description);
+  contactInfoDescEditLabel.textContent = description ? "Editar descrição" : "Adicionar descrição";
+}
+
+/**
+ * Liga o botão de editar a descrição do grupo: troca o texto por uma caixa pra digitar, com Salvar
+ * e Cancelar. Se o WhatsApp recusar (sem permissão), o aviso aparece e nada muda na tela.
+ */
+function setupGroupDescriptionEditor(jid, meta, requestId) {
+  const closeEditor = () => {
+    contactInfoDescEditor.classList.add("hidden");
+    contactInfoDescEditBtn.classList.remove("hidden");
+    paintGroupDescription(meta.description);
+  };
+
+  contactInfoDescEditBtn.classList.remove("hidden");
+  contactInfoDescEditBtn.onclick = () => {
+    contactInfoDescInput.value = meta.description || "";
+    contactInfoDescEl.classList.add("hidden");
+    contactInfoDescEditBtn.classList.add("hidden");
+    contactInfoDescEditor.classList.remove("hidden");
+    contactInfoDescInput.focus();
+  };
+  contactInfoDescCancelBtn.onclick = closeEditor;
+  contactInfoDescSaveBtn.onclick = async () => {
+    setBusy(contactInfoDescSaveBtn, true, "Salvando…");
+    try {
+      const { description } = await api(`/groups/${encodeURIComponent(jid)}/description`, { method: "PUT", body: { description: contactInfoDescInput.value } });
+      meta.description = description;
+      // fechou a janela ou abriu a de outro grupo enquanto salvava: não pinta nesta
+      if (requestId === contactInfoRequestId) closeEditor();
+      notify.success(description ? "A descrição do grupo foi atualizada." : "A descrição do grupo foi removida.", { title: "Descrição salva" });
+    } catch (err) {
+      notify.error(err.message, { title: "Não foi possível salvar a descrição" });
+    } finally {
+      setBusy(contactInfoDescSaveBtn, false);
+    }
+  };
+}
+
+/**
+ * Seção "Cobrar este cliente" dos dados do contato: só pessoa, só com a MisticPay configurada. Já deixa
+ * o valor pré-preenchido com o "NN,NN chama" recente que você mandou na conversa (se houver).
+ */
+function setupContactInfoCharge(jid, requestId) {
+  contactInfoChargeSection.classList.toggle("hidden", !misticConfigured);
+  if (!misticConfigured) return;
+  contactInfoChargeAmount.value = "";
+  contactInfoChargeAmount.classList.remove("is-invalid");
+  contactInfoChargeForm.onsubmit = (e) => {
+    e.preventDefault();
+    sendContactInfoCharge(jid);
+  };
+  api(`/chats/${encodeURIComponent(jid)}/charge-suggestion`)
+    .then(({ amountCents }) => {
+      if (requestId !== contactInfoRequestId) return;
+      if (amountCents && !contactInfoChargeAmount.value) contactInfoChargeAmount.value = (amountCents / 100).toFixed(2);
+    })
+    .catch(() => {});
+}
+
+async function sendContactInfoCharge(jid) {
+  const amount = Number(contactInfoChargeAmount.value);
+  if (!(amount > 0)) return flagInvalid(contactInfoChargeAmount, "Informe o valor da cobrança.");
+  setBusy(contactInfoChargeSendBtn, true, "Enviando…");
+  try {
+    const { charge } = await api("/mistic/charges", { method: "POST", body: { amount, chatJid: jid, send: true } });
+    if (charge?.sendError) {
+      notify.warning(`A cobrança de ${formatBRL(amount)} foi criada, mas não chegou ao cliente: ${charge.sendError} Use “Reenviar” em Cobranças.`, { title: "Envio falhou", duration: 10000 });
+    } else {
+      notify.success(`Cobrança de ${formatBRL(amount)} enviada. Aviso aqui quando o pagamento cair.`, { title: "Cobrança enviada", duration: 6000 });
+      contactInfoChargeAmount.value = "";
+    }
+  } catch (err) {
+    notify.error(err.message, { title: "Não foi possível cobrar" });
+  } finally {
+    setBusy(contactInfoChargeSendBtn, false);
+  }
+}
+
 function openContactInfo({ jid, isGroup, presetName }) {
   const requestId = ++contactInfoRequestId;
   const chat = findChat(jid);
@@ -2333,6 +2962,8 @@ function openContactInfo({ jid, isGroup, presetName }) {
   contactInfoSubEl.classList.toggle("hidden", !contactInfoSubEl.textContent);
   contactInfoDescEl.classList.add("hidden");
   contactInfoDescEl.textContent = "";
+  contactInfoDescEditBtn.classList.add("hidden");
+  contactInfoDescEditor.classList.add("hidden");
 
   // "Chamar no privado": só faz sentido pra uma pessoa (não pro grupo em si) — útil tanto ao abrir
   // pelos dados de alguém quanto ao clicar no nome dela dentro de uma mensagem de grupo.
@@ -2360,6 +2991,7 @@ function openContactInfo({ jid, isGroup, presetName }) {
   contactInfoParticipantsRow.onclick = null;
   contactInfoMediaSection.classList.add("hidden");
   contactInfoGroupsSection.classList.add("hidden");
+  contactInfoChargeSection.classList.add("hidden");
 
   openModal(contactInfoModal);
 
@@ -2386,6 +3018,8 @@ function openContactInfo({ jid, isGroup, presetName }) {
         if (requestId === contactInfoRequestId) renderContactInfoGroupsInCommon(groups);
       })
       .catch(() => {});
+
+    setupContactInfoCharge(jid, requestId);
   }
 
   if (isGroup) {
@@ -2394,10 +3028,9 @@ function openContactInfo({ jid, isGroup, presetName }) {
         if (requestId !== contactInfoRequestId) return;
         contactInfoSubEl.textContent = `Grupo · ${meta.memberCount} membros`;
         contactInfoSubEl.classList.remove("hidden");
-        if (meta.description) {
-          contactInfoDescEl.textContent = meta.description;
-          contactInfoDescEl.classList.remove("hidden");
-        }
+        paintGroupDescription(meta.description);
+        // Só quem pode editar os dados do grupo vê o botão (admin, ou qualquer membro se o grupo permitir)
+        if (meta.canEditInfo) setupGroupDescriptionEditor(jid, meta, requestId);
         contactInfoParticipantsCount.textContent = `${meta.memberCount} membros`;
         contactInfoParticipantsRow.onclick = () => openGroupParticipantsModal(jid, meta);
         contactInfoParticipantsRow.classList.remove("hidden");
@@ -2558,7 +3191,7 @@ function selectSettingsPanel(name) {
   });
 }
 
-async function openQuickReplySettingsModal() {
+export async function openQuickReplySettingsModal() {
   let generalSettings;
   try {
     [quickReplySettings, generalSettings] = await Promise.all([api("/chat-quick-replies"), api("/settings")]);
@@ -2575,6 +3208,9 @@ async function openQuickReplySettingsModal() {
   rideAssistantEnabledInput.checked = generalSettings.rideAssistantEnabled;
   rideChargeEnabledInput.checked = generalSettings.rideAutoChargeEnabled;
   rideChargeTriggerSelect.value = generalSettings.rideChargeTrigger;
+  rideChargeKeywordInput.value = generalSettings.rideChargeKeyword || "chama";
+  rideChargeMessageEnabledInput.checked = generalSettings.rideChargeMessageEnabled !== false;
+  rideChargeMessageField.classList.toggle("hidden", !rideChargeMessageEnabledInput.checked);
   rideChargeMessageDefault = generalSettings.defaults?.rideChargeMessage ?? "";
   rideChargeMessageInput.value = generalSettings.rideChargeMessage || rideChargeMessageDefault;
   rideVehicleDetailsInput.checked = generalSettings.rideVehicleDetailsEnabled !== false;
@@ -2604,7 +3240,9 @@ async function saveQuickReplySettings() {
         body: {
           rideAssistantEnabled: rideAssistantEnabledInput.checked,
           rideAutoChargeEnabled: rideChargeEnabledInput.checked,
+          rideChargeMessageEnabled: rideChargeMessageEnabledInput.checked,
           rideChargeTrigger: rideChargeTriggerSelect.value,
+          rideChargeKeyword: rideChargeKeywordInput.value,
           rideChargeMessage: rideChargeMessageInput.value,
           rideVehicleDetailsEnabled: rideVehicleDetailsInput.checked,
           ...Object.fromEntries(rideMessageInputs.map((input) => [input.dataset.rideMessage, input.value])),
@@ -2644,9 +3282,15 @@ export function initChat() {
   });
 
   chatListSearchInput.addEventListener("input", () => {
-    chatListFilter = normalizeForSearch(chatListSearchInput.value.trim());
-    if (currentFolderId) renderFolderChatList();
-    else renderChatList();
+    chatListQueryRaw = chatListSearchInput.value.trim();
+    chatListFilter = normalizeForSearch(chatListQueryRaw);
+    if (currentFolderId) {
+      renderFolderChatList();
+    } else {
+      renderChatList();
+      // Na lista principal, a busca também procura contatos (incl. você) e dentro das mensagens
+      if (chatListFilter && !viewingArchived) loadSearchExtras();
+    }
   });
 
   chatBackBtn.addEventListener("click", closeThread);
@@ -2658,6 +3302,21 @@ export function initChat() {
       const id = retryBtn.closest(".chat-bubble-row")?.dataset.id;
       const message = messages.find((m) => m.id === id);
       if (message) void retryMediaDownload(message);
+      return;
+    }
+
+    // Clicou num link de convite de grupo: pergunta e entra pela NOSSA conta (não abre o navegador/WhatsApp padrão).
+    const groupInvite = e.target.closest(".chat-group-invite");
+    if (groupInvite) {
+      e.preventDefault();
+      void joinGroupByLink(groupInvite.dataset.groupLink);
+      return;
+    }
+
+    // Clicou no trecho citado de uma resposta: leva até a mensagem original (igual ao WhatsApp).
+    const quote = e.target.closest(".chat-quote[data-quoted-id]");
+    if (quote) {
+      void jumpToMessage(quote.dataset.quotedId, Number(quote.dataset.quotedTs) || 0);
       return;
     }
 
@@ -2764,6 +3423,9 @@ export function initChat() {
     const btn = e.target.closest(".modal-settings-nav-item");
     if (btn) selectSettingsPanel(btn.dataset.settingsPanel);
   });
+  rideChargeMessageEnabledInput.addEventListener("change", () => {
+    rideChargeMessageField.classList.toggle("hidden", !rideChargeMessageEnabledInput.checked);
+  });
   document.getElementById("settings-panel-ride-assistant").addEventListener("click", (e) => {
     if (e.target.closest("[data-ride-charge-reset]")) rideChargeMessageInput.value = rideChargeMessageDefault;
     const resetBtn = e.target.closest("[data-ride-message-reset]");
@@ -2820,14 +3482,53 @@ export function initChat() {
   });
   chatAttachmentRemoveBtn.addEventListener("click", clearAttachment);
 
-  chatInput.addEventListener("input", autoGrowComposeInput);
+  chatInput.addEventListener("input", () => {
+    autoGrowComposeInput();
+    void updateMentionPopup();
+  });
   chatInput.addEventListener("paste", handleComposePaste);
   chatInput.addEventListener("keydown", (e) => {
+    if (handleMentionKeydown(e)) {
+      e.preventDefault();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       chatComposeForm.requestSubmit();
     }
   });
+  // Esconde o popup de marcação ao sair do campo (com uma folga pra o clique num item funcionar).
+  chatInput.addEventListener("blur", () => setTimeout(hideMentionPopup, 150));
+  chatMentionPopup.addEventListener("mousedown", (e) => {
+    const btn = e.target.closest(".chat-mention-item");
+    if (!btn) return;
+    e.preventDefault(); // não deixa o textarea perder o foco antes de inserir
+    applyMention(mentionMatches[Number(btn.dataset.index)]);
+  });
+
+  // Nova conversa
+  chatNewConversationBtn.addEventListener("click", openNewChatModal);
+  newChatSelfBtn.addEventListener("click", () => startNewChat({ self: true }));
+  newChatPhoneForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const phone = newChatPhoneInput.value.trim();
+    if (!phone) return;
+    startNewChat({ phone });
+  });
+  newChatContactSearch.addEventListener("input", renderNewChatContacts);
+  newChatContactList.addEventListener("click", (e) => {
+    const li = e.target.closest(".stack-item[data-jid]");
+    if (li) startNewChat({ jid: li.dataset.jid });
+  });
+  newChatContactList.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const li = e.target.closest(".stack-item[data-jid]");
+    if (li) {
+      e.preventDefault();
+      startNewChat({ jid: li.dataset.jid });
+    }
+  });
+  bindModal(newChatModal, () => closeModal(newChatModal));
 
   chatComposeForm.addEventListener("submit", (e) => {
     e.preventDefault();

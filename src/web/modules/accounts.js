@@ -11,7 +11,9 @@ import {
   isModalOpen,
   flagInvalid,
   setBusy,
+  openMenu,
 } from "./ui.js";
+import { addScreen, openAccountSettings } from "./multiscreen.js";
 
 const ACCOUNT_KEY = "brinzy-active-account";
 const DEFAULT_ACCOUNT_ID = "default";
@@ -106,6 +108,9 @@ export function renderAccountRail() {
           <span class="account-dot" aria-hidden="true"></span>
           ${badge}
           ${unreadBadge}
+        </button>
+        <button type="button" class="account-menu-btn" data-menu-id="${escapeHtml(a.id)}" title="Opções deste WhatsApp" aria-label="Opções de ${escapeHtml(a.name)}">
+          <svg class="icon"><use href="#i-more"/></svg>
         </button>
       </li>`;
     })
@@ -318,11 +323,25 @@ async function removeAccount() {
   }
 }
 
+/** Menu de 3 pontinhos de um WhatsApp (barra lateral): configurações da conta/zap e multi telas. */
+function openAccountMenu(anchor, accountId) {
+  openMenu(anchor, [
+    { label: "Configuração da conta", icon: "sliders", run: () => openAccountSettings(accountId, "account") },
+    { label: "Configuração do zap", icon: "message", run: () => openAccountSettings(accountId, "zap") },
+    { label: "Multi telas", icon: "copy", run: () => addScreen(accountId) },
+  ]);
+}
+
 /** `switchHandler` recarrega a tela toda para a conta recém-selecionada. */
 export function initAccounts(switchHandler) {
   onSwitch = switchHandler;
 
   listEl.addEventListener("click", (e) => {
+    const menuBtn = e.target.closest(".account-menu-btn");
+    if (menuBtn) {
+      openAccountMenu(menuBtn, menuBtn.dataset.menuId);
+      return;
+    }
     const btn = e.target.closest(".account-btn");
     if (btn) selectAccount(btn.dataset.id);
   });

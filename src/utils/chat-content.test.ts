@@ -1,11 +1,34 @@
 import { expect, test } from "bun:test";
 import { WAMessageStubType } from "baileys-joss";
 import type { WAMessage } from "baileys-joss";
-import { extractChatContent, renderSystemText } from "./chat-content";
+import { extractChatContent, extractEditedText, extractMessageEdit, renderSystemText } from "./chat-content";
 
 function msg(message: WAMessage["message"]): WAMessage {
   return { key: { remoteJid: "5511977770000@s.whatsapp.net", fromMe: false, id: "M1" }, message } as WAMessage;
 }
+
+test("extractEditedText lê o novo texto da edição que chega por messages.update (embrulhada em editedMessage.message)", () => {
+  // Formato que o baileys entrega em update.message (ver core/connection.ts)
+  expect(extractEditedText({ editedMessage: { message: { conversation: "texto editado" } } } as never)).toBe("texto editado");
+  expect(extractEditedText({ editedMessage: { message: { extendedTextMessage: { text: "outro editado" } } } } as never)).toBe("outro editado");
+  // Também aceita o conteúdo direto (sem o embrulho)
+  expect(extractEditedText({ conversation: "direto" } as never)).toBe("direto");
+  // Edição de algo que não é texto, ou vazio → null
+  expect(extractEditedText({ editedMessage: { message: { imageMessage: {} } } } as never)).toBeNull();
+  expect(extractEditedText(null as never)).toBeNull();
+});
+
+test("extractMessageEdit lê a chave e o novo texto de uma edição (protocolMessage tipo 14)", () => {
+  const edit = msg({ protocolMessage: { type: 14, key: { id: "ALVO1" }, editedMessage: { conversation: "texto novo" } } } as WAMessage["message"]);
+  expect(extractMessageEdit(edit)).toEqual({ key: { id: "ALVO1" }, text: "texto novo" } as never);
+
+  const editExtended = msg({ protocolMessage: { type: 14, key: { id: "ALVO2" }, editedMessage: { extendedTextMessage: { text: "outro" } } } } as WAMessage["message"]);
+  expect(extractMessageEdit(editExtended)?.text).toBe("outro");
+
+  // Não é edição: texto comum e revogação (tipo 0) devolvem null
+  expect(extractMessageEdit(msg({ conversation: "oi" }))).toBeNull();
+  expect(extractMessageEdit(msg({ protocolMessage: { type: 0, key: { id: "X" } } } as WAMessage["message"]))).toBeNull();
+});
 
 function stubMsg(messageStubType: number): WAMessage {
   return { key: { remoteJid: "120363000000000000@g.us", fromMe: false, id: "M1" }, messageStubType } as WAMessage;

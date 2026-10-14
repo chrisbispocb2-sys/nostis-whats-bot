@@ -64,6 +64,22 @@ export class IdentityService {
     }
     return jid;
   }
+
+  /**
+   * Caminho inverso: a partir do JID de telefone, descobre o LID (identidade oculta) da pessoa, se o
+   * WhatsApp souber. Serve pra achar "grupos em comum" em que ela aparece oculta (gravada pelo LID)
+   * quando você só tem o telefone dela.
+   */
+  public async resolveLidForPhone(sock: WASocket, phoneJid: string): Promise<string | null> {
+    if (!phoneJid.endsWith("@s.whatsapp.net")) return null;
+    try {
+      const lid = await sock.signalRepository.lidMapping.getLIDForPN(phoneJid);
+      return lid && lid.endsWith("@lid") ? lid : null;
+    } catch (err) {
+      console.error("Falha ao resolver o telefone pro LID:", err);
+      return null;
+    }
+  }
 }
 
 export const identityService = new IdentityService();

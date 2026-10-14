@@ -295,6 +295,75 @@ export function promptDialog({
   });
 }
 
+/* ---------- Menu suspenso genérico (dropdown) ---------- */
+
+let openMenuEl = null;
+let closeOpenMenu = null;
+
+/**
+ * Abre um menu suspenso ancorado num botão. `items`: { label, icon, danger, disabled, run }.
+ * Autossuficiente (cria e remove o próprio elemento) — serve pra qualquer lugar do painel, sem
+ * depender do dropdown interno do chat.
+ */
+export function openMenu(anchor, items) {
+  closeOpenMenu?.();
+
+  const el = document.createElement("div");
+  el.className = "chat-dropdown";
+  el.setAttribute("role", "menu");
+  el.innerHTML = items
+    .map(
+      (it, i) =>
+        `<button type="button" role="menuitem" data-i="${i}" class="${it.danger ? "is-danger" : ""}" ${it.disabled ? "disabled" : ""}>${it.icon ? icon(it.icon) : ""}<span>${escapeHtml(it.label)}</span></button>`
+    )
+    .join("");
+  document.body.appendChild(el);
+  openMenuEl = el;
+
+  const rect = anchor.getBoundingClientRect();
+  const menuRect = el.getBoundingClientRect();
+  const top = Math.min(rect.bottom + 4, window.innerHeight - menuRect.height - 8);
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuRect.width - 8));
+  el.style.top = `${Math.max(8, top)}px`;
+  el.style.left = `${left}px`;
+
+  const close = () => {
+    document.removeEventListener("click", onDocClick, true);
+    document.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("resize", close);
+    window.removeEventListener("scroll", close, true);
+    el.remove();
+    if (openMenuEl === el) openMenuEl = null;
+    if (closeOpenMenu === close) closeOpenMenu = null;
+  };
+  closeOpenMenu = close;
+
+  const onDocClick = (e) => {
+    if (el.contains(e.target)) return;
+    if (anchor.contains(e.target)) return; // o próprio botão que abriu também dispara no document
+    close();
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") close();
+  };
+
+  el.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-i]");
+    if (!btn || btn.disabled) return;
+    const item = items[Number(btn.dataset.i)];
+    close();
+    item?.run?.();
+  });
+
+  // Num quadro depois (senão o clique que abriu fecha na hora, por bubbling)
+  requestAnimationFrame(() => {
+    document.addEventListener("click", onDocClick, true);
+    document.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+  });
+}
+
 /* ---------- Helpers de formulário / botões ---------- */
 
 /** Marca um campo como inválido (borda vermelha + shake), foca nele e limpa ao digitar. */

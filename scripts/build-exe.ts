@@ -34,6 +34,9 @@ try {
       "--compile",
       "--minify",
       "--windows-icon=assets/icon.ico",
+      // Abre só a janela do painel, sem a janela preta de console (prompt de comando) do lado
+      "--windows-hide-console",
+      "--windows-title=Bot Brinzy",
       "--outfile",
       tmpExe,
     ],

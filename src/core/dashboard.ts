@@ -89,6 +89,9 @@ export function startDashboard(manager: AccountManager, port = CONFIG.defaultPor
   const server = Bun.serve<ChatSocketData>({
     port,
     hostname: "127.0.0.1",
+    // Documento de até 100 MB (o teto do WhatsApp) chega aqui em base64 pelo JSON (~+33%). O padrão do
+    // Bun é 128 MB, que estouraria; 160 MB cobre o base64 com folga. Ver MAX_DOCUMENT_MB em web/modules/chat.js.
+    maxRequestBodySize: 160 * 1024 * 1024,
     fetch(req, srv) {
       if (realtime) {
         const match = new URL(req.url).pathname.match(CHAT_SOCKET_PATH);

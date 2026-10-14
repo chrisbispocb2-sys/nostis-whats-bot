@@ -9,7 +9,7 @@ const USER_ICON_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="36" height="36" aria-hidden="true">' +
   '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
 
-const ROLE_LABELS = { admin: "Administrador", operator: "Operador" };
+const ROLE_LABELS = { admin: "Administrador", leader: "Líder", operator: "Operador" };
 
 /** Mesmas chaves de `FEATURE_KEYS` em src/core/user-store.ts — mantenha os dois em sincronia. */
 const FEATURE_LABELS = {
@@ -25,13 +25,30 @@ const FEATURE_ORDER = Object.keys(FEATURE_LABELS);
 
 /* ---------- Tela de login / primeira conta / convite ---------- */
 
-function authScreenMarkup(mode) {
+/** Tira o código do convite de um texto: aceita o código puro ou o link inteiro (…/?invite=CÓDIGO). */
+function extractInviteToken(raw) {
+  const value = (raw || "").trim();
+  const match = value.match(/[?&]invite=([^&\s]+)/i);
+  return (match ? decodeURIComponent(match[1]) : value).trim();
+}
+
+/** `needsInviteCode`: registro em que a pessoa digita o convite na tela (chegou por "criar conta", não pelo link). */
+function authScreenMarkup(mode, { needsInviteCode = false } = {}) {
   const titles = {
     login: ["Entrar no painel", "Use a conta que você já tem para continuar."],
     bootstrap: ["Criar a primeira conta", "Ainda não existe nenhuma conta neste painel. Esta primeira conta vira administradora e pode convidar as próximas pessoas."],
-    register: ["Você foi convidado(a)", "Escolha um usuário e uma senha para criar sua conta."],
+    register: needsInviteCode
+      ? ["Criar conta com convite", "Cole o código ou o link do convite que você recebeu e escolha um usuário e uma senha."]
+      : ["Você foi convidado(a)", "Escolha um usuário e uma senha para criar sua conta."],
   };
   const [title, subtitle] = titles[mode];
+
+  const inviteField = needsInviteCode
+    ? `<div class="field">
+         <label for="auth-invite">Código ou link de convite</label>
+         <input id="auth-invite" class="input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Cole aqui o código ou o link do convite" required>
+       </div>`
+    : "";
   const confirmField =
     mode === "login"
       ? ""
@@ -41,6 +58,14 @@ function authScreenMarkup(mode) {
          </div>`;
   const submitLabel = { login: "Entrar", bootstrap: "Criar conta", register: "Criar minha conta" }[mode];
 
+  // Entre login e "criar conta com convite" dá pra ir e voltar sem precisar do link por fora.
+  const altAction =
+    mode === "login"
+      ? `<p class="auth-alt">Recebeu um convite? <button type="button" id="auth-go-register" class="auth-link">Criar conta com um convite</button></p>`
+      : mode === "register"
+        ? `<p class="auth-alt">Já tem conta? <button type="button" id="auth-go-login" class="auth-link">Entrar</button></p>`
+        : "";
+
   return `
     <div class="lock-screen">
       <div class="lock-card auth-card">
@@ -48,6 +73,7 @@ function authScreenMarkup(mode) {
         <h1>${title}</h1>
         <p>${subtitle}</p>
         <form id="auth-form" class="auth-form">
+          ${inviteField}
           <div class="field">
             <label for="auth-username">Usuário</label>
             <input id="auth-username" class="input" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required>
@@ -60,6 +86,7 @@ function authScreenMarkup(mode) {
           <p id="auth-error" class="hint auth-error hidden"></p>
           <button id="auth-submit" class="btn btn-primary" type="submit">${submitLabel}</button>
         </form>
+        ${altAction}
       </div>
     </div>`;
 }
@@ -76,14 +103,20 @@ function showAuthError(message) {
  * esta função nunca "termina" num caminho de erro — é só para o `boot()` não seguir em frente).
  */
 function renderGate(mode, inviteToken) {
+  // Registro sem token veio da própria tela ("criar conta com convite"): a pessoa digita o código.
+  const needsInviteCode = mode === "register" && !inviteToken;
   document.title = mode === "login" ? "Entrar" : mode === "bootstrap" ? "Criar conta" : "Convite";
-  document.body.innerHTML = authScreenMarkup(mode);
+  document.body.innerHTML = authScreenMarkup(mode, { needsInviteCode });
 
   const form = document.getElementById("auth-form");
+  const inviteInput = document.getElementById("auth-invite"); // só no registro digitado
   const usernameInput = document.getElementById("auth-username");
   const passwordInput = document.getElementById("auth-password");
   const confirmInput = document.getElementById("auth-confirm");
   const submitBtn = document.getElementById("auth-submit");
+
+  document.getElementById("auth-go-register")?.addEventListener("click", () => renderGate("register", null));
+  document.getElementById("auth-go-login")?.addEventListener("click", () => renderGate("login"));
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -91,6 +124,9 @@ function renderGate(mode, inviteToken) {
 
     const username = usernameInput.value.trim();
     const password = passwordInput.value;
+    // Código digitado na tela, ou o do link (?invite=) por onde a pessoa chegou
+    const token = inviteInput ? extractInviteToken(inviteInput.value) : inviteToken;
+    if (mode === "register" && !token) return showAuthError("Cole o código ou o link do convite que você recebeu.");
     if (mode !== "login" && password !== confirmInput.value) {
       return showAuthError("As senhas não são iguais.");
     }
@@ -99,7 +135,7 @@ function renderGate(mode, inviteToken) {
     try {
       if (mode === "login") await api("/auth/login", { method: "POST", body: { username, password } });
       else if (mode === "bootstrap") await api("/auth/bootstrap", { method: "POST", body: { username, password } });
-      else await api("/auth/register", { method: "POST", body: { inviteToken, username, password } });
+      else await api("/auth/register", { method: "POST", body: { inviteToken: token, username, password } });
       location.reload();
     } catch (err) {
       showAuthError(err.message);
@@ -107,7 +143,25 @@ function renderGate(mode, inviteToken) {
     }
   });
 
-  usernameInput.focus();
+  (inviteInput || usernameInput).focus();
+}
+
+/* ---------- Botão "Baixar atualização" (o admin publica a versão nova; quem está noutra versão vê) ---------- */
+
+const updateBtn = document.getElementById("update-btn");
+const updateBtnLabel = document.getElementById("update-btn-label");
+
+/** Mostra o botão de baixar (com o link publicado) quando há uma versão diferente da que roda aqui. */
+function applyUpdate(update) {
+  if (!updateBtn) return;
+  if (update?.url) {
+    updateBtn.href = update.url;
+    updateBtn.classList.remove("hidden");
+    if (updateBtnLabel) updateBtnLabel.textContent = update.version ? `Baixar atualização (${update.version})` : "Baixar atualização";
+    updateBtn.title = update.notes ? `Nova versão disponível. ${update.notes}` : "Baixar a nova versão do programa";
+  } else {
+    updateBtn.classList.add("hidden");
+  }
 }
 
 /**
@@ -124,7 +178,9 @@ export async function guardAuth() {
 
   if (status.authenticated) {
     state.currentUser = status.user;
+    state.appVersion = status.appVersion ?? null;
     warnAboutLicense(status.license);
+    applyUpdate(status.update);
     return { blocked: false };
   }
 
@@ -172,6 +228,7 @@ async function watchSession() {
   }
   if (!status.authenticated) return location.reload();
   warnAboutLicense(status.license);
+  applyUpdate(status.update);
 
   const before = state.currentUser;
   const after = status.user;
@@ -243,6 +300,14 @@ const createInviteBtn = document.getElementById("create-invite-btn");
 const newKeyDaysInput = document.getElementById("new-key-days");
 const createKeyBtn = document.getElementById("create-key-btn");
 
+const releaseCurrentVersionEl = document.getElementById("release-current-version");
+const releaseStatusEl = document.getElementById("release-status");
+const releaseVersionInput = document.getElementById("release-version");
+const releaseUrlInput = document.getElementById("release-url");
+const releaseNotesInput = document.getElementById("release-notes");
+const releasePublishBtn = document.getElementById("release-publish-btn");
+const releaseClearBtn = document.getElementById("release-clear-btn");
+
 async function logout() {
   const confirmed = await confirmDialog({ title: "Sair do painel?", message: "Você vai precisar entrar de novo com seu usuário e senha." });
   if (!confirmed) return;
@@ -307,6 +372,7 @@ function renderInvites(invites) {
         </div>
         <div class="card-actions">
           ${pending ? `<button type="button" class="btn btn-ghost btn-sm" data-act="copy" data-id="${i.id}">${icon("copy")} Copiar link</button>` : ""}
+          ${pending ? `<button type="button" class="btn btn-ghost btn-sm" data-act="copy-code" data-id="${i.id}">${icon("copy")} Copiar código</button>` : ""}
           ${pending ? `<button type="button" class="icon-btn icon-btn-sm danger" data-act="revoke" data-id="${i.id}" title="Revogar convite" aria-label="Revogar convite">${icon("x")}</button>` : ""}
         </div>
       </li>`;
@@ -333,6 +399,12 @@ async function onInvitesClick(e) {
   const id = btn.dataset.id;
 
   if (btn.dataset.act === "copy") return copyInviteLink(id);
+
+  if (btn.dataset.act === "copy-code") {
+    if (await copyToClipboard(id)) notify.success("Código do convite copiado — a pessoa cola na tela de criar conta.", { title: "Copiado", duration: 3000 });
+    else notify.warning(id, { title: "Copie o código manualmente", duration: 15000 });
+    return;
+  }
 
   if (btn.dataset.act === "revoke") {
     const confirmed = await confirmDialog({ title: "Revogar este convite?", message: "Quem ainda não usou o link não vai mais conseguir criar conta com ele.", confirmText: "Revogar", tone: "danger" });
@@ -384,6 +456,40 @@ function devicesRowHtml(u) {
   </div>`;
 }
 
+/**
+ * Equipe da conta: quem tem o mesmo nome de equipe e atende no mesmo WhatsApp compartilha as listas
+ * de conversas e a vez de ligar o bot. Vale pra administrador também (ele pode ser um dos atendentes).
+ * Só aparece com servidor de licenças.
+ */
+function teamRowHtml(u) {
+  if (!Array.isArray(u.devices)) return "";
+  return `
+  <div class="access-expiry-row">
+    <label class="hint" for="team-${u.id}">Equipe:</label>
+    <input id="team-${u.id}" class="input" type="text" maxlength="40" data-team data-id="${u.id}" value="${escapeHtml(u.team || "")}" placeholder="sem equipe" style="max-width:180px"
+      title="Quem atende no mesmo WhatsApp já é juntado sozinho (listas compartilhadas e um bot ligado por vez). A equipe só é usada como reserva, se o programa não conseguir confirmar o WhatsApp de alguém.">
+    <span class="hint">opcional: quem usa o mesmo WhatsApp já é juntado sozinho</span>
+  </div>`;
+}
+
+/**
+ * Papel da conta (Operador / Líder / Administrador), editável pelo admin — promover um operador a
+ * líder, por exemplo. Não aparece na própria conta (não dá pra mudar o próprio papel) e só com
+ * servidor de licenças (no modo local as contas não saem deste computador).
+ */
+function roleRowHtml(u) {
+  if (u.id === state.currentUser?.id || !Array.isArray(u.devices)) return "";
+  const opt = (value) => `<option value="${value}" ${u.role === value ? "selected" : ""}>${ROLE_LABELS[value]}</option>`;
+  return `
+  <div class="access-expiry-row">
+    <label class="hint" for="role-${u.id}">Papel:</label>
+    <select id="role-${u.id}" class="select" data-role data-id="${u.id}" style="max-width:170px">
+      ${opt("operator")}${opt("leader")}${opt("admin")}
+    </select>
+    <span class="hint">líder gerencia a própria equipe; a pessoa entra de novo para valer</span>
+  </div>`;
+}
+
 function renderUsers(users) {
   usersListEl.innerHTML = users
     .map((u) => {
@@ -391,7 +497,7 @@ function renderUsers(users) {
       const expired = u.expiresAt !== null && u.expiresAt <= Date.now();
       const accessControls =
         u.role === "admin"
-          ? `<span class="hint">Administrador: acesso total, sem prazo nem restrições.</span>`
+          ? `<span class="hint">Administrador: acesso total, sem prazo nem restrições.</span>${teamRowHtml(u)}`
           : `<div class="access-expiry-row">
                <label class="hint" for="expiry-${u.id}">Acesso até:</label>
                <input id="expiry-${u.id}" class="input" type="date" data-expiry data-id="${u.id}" value="${dateInputValue(u.expiresAt)}" style="max-width:160px">
@@ -403,7 +509,7 @@ function renderUsers(users) {
                    `<label class="feature-chip"><input type="checkbox" data-feature="${key}" data-id="${u.id}" ${u.features?.[key] ? "checked" : ""}> ${FEATURE_LABELS[key]}</label>`
                ).join("")}
              </div>
-             ${devicesRowHtml(u)}`;
+             ${devicesRowHtml(u)}${teamRowHtml(u)}`;
 
       return `
       <li class="stack-item ${u.disabled ? "is-muted" : ""}" data-id="${u.id}">
@@ -416,6 +522,7 @@ function renderUsers(users) {
               ${!u.disabled && expired ? '<span class="badge badge-muted">Vencido</span>' : ""}
             </strong>
             <span class="charge-meta">Criado ${relativeTime(u.createdAt)}${isSelf ? " · você" : ""}</span>
+            ${roleRowHtml(u)}
             ${accessControls}
           </div>
         </div>
@@ -433,6 +540,22 @@ function renderUsers(users) {
     .join("");
 }
 
+async function changeUserRole(id, role) {
+  const confirmed = await confirmDialog({
+    title: "Mudar o papel desta conta?",
+    message: `A conta passa a ser "${ROLE_LABELS[role] || role}". A pessoa é desconectada e precisa entrar de novo para o novo papel valer.`,
+    confirmText: "Mudar papel",
+  });
+  if (!confirmed) return refreshUsers(); // desfaz a escolha visual no seletor
+  try {
+    await api(`/auth/users/${encodeURIComponent(id)}/role`, { method: "POST", body: { role } });
+    await refreshUsers();
+  } catch (err) {
+    notify.error(err.message, { title: "Não foi possível mudar o papel" });
+    await refreshUsers();
+  }
+}
+
 async function saveUserAccess(id, patch, { refresh = true } = {}) {
   try {
     await api(`/auth/users/${encodeURIComponent(id)}/access`, { method: "POST", body: patch });
@@ -444,6 +567,12 @@ async function saveUserAccess(id, patch, { refresh = true } = {}) {
 }
 
 function onUsersChange(e) {
+  const roleSelect = e.target.closest("select[data-role]");
+  if (roleSelect) {
+    changeUserRole(roleSelect.dataset.id, roleSelect.value);
+    return;
+  }
+
   const featureInput = e.target.closest("input[data-feature]");
   if (featureInput) {
     saveUserAccess(featureInput.dataset.id, { features: { [featureInput.dataset.feature]: featureInput.checked } }, { refresh: false });
@@ -454,6 +583,12 @@ function onUsersChange(e) {
   if (devicesInput) {
     const maxDevices = Math.floor(Number(devicesInput.value));
     if (maxDevices >= 1) saveUserAccess(devicesInput.dataset.id, { maxDevices });
+    return;
+  }
+
+  const teamInput = e.target.closest("input[data-team]");
+  if (teamInput) {
+    saveUserAccess(teamInput.dataset.id, { team: teamInput.value.trim() });
     return;
   }
 
@@ -618,16 +753,67 @@ async function refreshKeys() {
   }
 }
 
+/* ---------- Atualização do app: o admin publica a versão disponível pra baixar ---------- */
+
+async function refreshRelease() {
+  if (releaseCurrentVersionEl) releaseCurrentVersionEl.textContent = state.appVersion || "—";
+  try {
+    const { release } = await api("/auth/release");
+    if (release) {
+      releaseStatusEl.textContent = `Publicada: versão ${release.version}${release.notes ? ` · ${release.notes}` : ""}`;
+      releaseVersionInput.value = release.version;
+      releaseUrlInput.value = release.url;
+      releaseNotesInput.value = release.notes || "";
+    } else {
+      releaseStatusEl.textContent = "Nenhuma versão publicada — ninguém vê o botão de baixar.";
+    }
+  } catch (err) {
+    notify.error(err.message, { title: "Não foi possível carregar a atualização" });
+  }
+}
+
+async function publishRelease() {
+  const version = releaseVersionInput.value.trim();
+  const url = releaseUrlInput.value.trim();
+  if (!version) return notify.warning("Informe a versão.", { title: "Faltam dados" });
+  if (!/^https?:\/\//i.test(url)) return notify.warning("O link precisa começar com http:// ou https://.", { title: "Link inválido" });
+  setBusy(releasePublishBtn, true, "Publicando…");
+  try {
+    await api("/auth/release", { method: "POST", body: { version, url, notes: releaseNotesInput.value.trim() } });
+    notify.success("Versão publicada — quem estiver numa versão diferente vai ver o botão de baixar.", { title: "Pronto" });
+    await refreshRelease();
+  } catch (err) {
+    notify.error(err.message, { title: "Não foi possível publicar" });
+  } finally {
+    setBusy(releasePublishBtn, false);
+  }
+}
+
+async function clearPublishedRelease() {
+  const confirmed = await confirmDialog({ title: "Remover a atualização publicada?", message: "O botão “Baixar atualização” some para todo mundo.", confirmText: "Remover", tone: "danger" });
+  if (!confirmed) return;
+  try {
+    await api("/auth/release/clear", { method: "POST" });
+    releaseVersionInput.value = "";
+    releaseUrlInput.value = "";
+    releaseNotesInput.value = "";
+    await refreshRelease();
+  } catch (err) {
+    notify.error(err.message, { title: "Não foi possível remover" });
+  }
+}
+
 /* ---------- Inicialização ---------- */
 
 function initAccessTabs() {
-  const sections = { users: "access-section-users", invites: "access-section-invites", keys: "access-section-keys" };
+  const sections = { users: "access-section-users", invites: "access-section-invites", keys: "access-section-keys", release: "access-section-release" };
   document.querySelectorAll('input[name="access-tab"]').forEach((radio) => {
     radio.addEventListener("change", () => {
       if (!radio.checked) return;
       for (const [value, id] of Object.entries(sections)) {
         document.getElementById(id).classList.toggle("hidden", value !== radio.value);
       }
+      if (radio.value === "release") refreshRelease();
     });
   });
 }
@@ -637,8 +823,9 @@ export function initAccessControl() {
   logoutBtn?.addEventListener("click", logout);
   setInterval(watchSession, 60_000);
 
-  const isOperator = state.currentUser?.role === "operator";
-  redeemKeyBtn?.classList.toggle("hidden", !isOperator);
+  // Operador e líder têm prazo de acesso (podem resgatar chave); o administrador não.
+  const canRedeem = state.currentUser?.role === "operator" || state.currentUser?.role === "leader";
+  redeemKeyBtn?.classList.toggle("hidden", !canRedeem);
   redeemKeyBtn?.addEventListener("click", redeemKey);
 
   const isAdmin = state.currentUser?.role === "admin";
@@ -652,6 +839,8 @@ export function initAccessControl() {
   usersListEl.addEventListener("change", onUsersChange);
   createKeyBtn.addEventListener("click", createKey);
   keysListEl.addEventListener("click", onKeysClick);
+  releasePublishBtn?.addEventListener("click", publishRelease);
+  releaseClearBtn?.addEventListener("click", clearPublishedRelease);
 
   refreshInvites();
   // Usuários primeiro: `renderKeys` precisa saber quantos administradores existem pra decidir se

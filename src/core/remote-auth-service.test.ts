@@ -7,7 +7,7 @@ import { createLicenseServer } from "../../servidor/src/server";
 import { openStores } from "../../servidor/src/stores";
 import { generateKeyPair, loadPrivateKey, signLicense } from "../../servidor/src/license-token";
 import { featuresWith as serverFeaturesWith } from "../../servidor/src/user-store";
-import { RemoteAuthService } from "./remote-auth-service";
+import { RemoteAuthService, sameVersion } from "./remote-auth-service";
 import { SessionStore } from "./session-store";
 import { SESSION_COOKIE_NAME } from "./auth-provider";
 import { AuthError, featuresWith } from "./user-store";
@@ -72,6 +72,22 @@ async function ownerAndClient() {
   const registered = await client.registerViaInvite(invite.id, "cliente", "senha-cliente");
   return { owner, ownerReq, client, clientReq: panelRequest(registered.cookie), clientId: registered.user.id };
 }
+
+describe("sameVersion (comparação de versão do app, tolerante a formato)", () => {
+  test("iguais de verdade", () => {
+    expect(sameVersion("1.0.3", "1.0.3")).toBe(true);
+  });
+  test("ignora espaços, 'v' na frente e maiúsculas", () => {
+    expect(sameVersion(" 1.0.3 ", "1.0.3")).toBe(true);
+    expect(sameVersion("v1.0.3", "1.0.3")).toBe(true);
+    expect(sameVersion("V1.0.3", "1.0.3")).toBe(true);
+  });
+  test("versões diferentes continuam diferentes", () => {
+    expect(sameVersion("1.0.2", "1.0.3")).toBe(false);
+    expect(sameVersion("", "1.0.3")).toBe(false);
+    expect(sameVersion(null, "1.0.3")).toBe(false);
+  });
+});
 
 describe("RemoteAuthService (login pelo servidor de licenças)", () => {
   test("nunca oferece criar a primeira conta por aqui; login errado repassa a recusa do servidor", async () => {
